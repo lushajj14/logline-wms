@@ -50,7 +50,7 @@ def barcode_xref_lookup(barcode: str, warehouse_id: str | None = None) -> Tuple[
         raise
 
 
-def find_item_by_barcode(barcode: str, lines: list, warehouse_set: set = None) -> Tuple[dict, float]:
+def find_item_by_barcode(barcode: str, lines: list, warehouse_set: set | None = None) -> Tuple[dict | None, float]:
     """
     Find matching line item for a barcode using multiple strategies.
     
@@ -110,7 +110,7 @@ def find_item_by_barcode(barcode: str, lines: list, warehouse_set: set = None) -
     return None, 1.0
 
 
-def parse_complex_barcode(barcode: str, lines: list) -> Tuple[dict, float]:
+def parse_complex_barcode(barcode: str, lines: list) -> Tuple[dict | None, float]:
     """
     Parse complex barcode formats like "44-1800/A-T10009-24-K10-1"
     
@@ -138,7 +138,7 @@ def parse_complex_barcode(barcode: str, lines: list) -> Tuple[dict, float]:
                     qty = float(qty_str)
                 else:
                     qty = 1.0
-            except:
+            except (ValueError, IndexError):
                 qty = 1.0
             
             # Try to match the code part

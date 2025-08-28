@@ -23,17 +23,18 @@ CREATE TABLE dbo.WMS_PICKQUEUE (
 ```
 """
 from __future__ import annotations
-import time
-MAX_RETRY = 3
-RETRY_WAIT = 2  # saniye
-# Standardized connection timeout (seconds)
-CONN_TIMEOUT = int(os.getenv("DB_CONN_TIMEOUT", "10"))
 import os
+import time
 import logging
 from contextlib import contextmanager
 from typing import Any, Dict, List
 import uuid
 import pyodbc
+
+MAX_RETRY = 3
+RETRY_WAIT = 2  # saniye
+# Standardized connection timeout (seconds)
+CONN_TIMEOUT = int(os.getenv("DB_CONN_TIMEOUT", "10"))
 
 logger = logging.getLogger(__name__)
 

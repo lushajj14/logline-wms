@@ -4,7 +4,7 @@ FastAPI + JWT oturum
     uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 import os
 import pyodbc
@@ -16,16 +16,35 @@ from jose import jwt, JWTError
 from pydantic import BaseModel
 
 # ───────────────────────────── Ayarlar
-# API Security - MUST use secure secret in production
-SECRET_KEY = os.getenv("API_SECRET")
+# API Security - Generate secure secret key
+import secrets
+import sys
+
+SECRET_KEY: str = os.getenv("API_SECRET", "")
 if not SECRET_KEY:
+    # Generate a secure random secret key
+    SECRET_KEY = secrets.token_urlsafe(32)
+    
+    # Log warning and provide the generated key for user to save
     import warnings
     warnings.warn(
-        "SECURITY WARNING: Using default API secret. "
-        "Please set API_SECRET environment variable with a secure random string.",
+        f"\n{'='*60}\n"
+        f"SECURITY WARNING: No API_SECRET environment variable found!\n"
+        f"A temporary secret key has been generated for this session.\n"
+        f"Please save this key and set it as API_SECRET environment variable:\n\n"
+        f"API_SECRET={SECRET_KEY}\n"
+        f"\nOn Windows: set API_SECRET={SECRET_KEY}\n"
+        f"On Linux/Mac: export API_SECRET={SECRET_KEY}\n"
+        f"{'='*60}\n",
         RuntimeWarning
     )
-    SECRET_KEY = "SuperGizliAnahtar123"  # NEVER use this in production!
+    
+    # In production, you might want to refuse to start without a proper secret
+    if os.getenv("ENVIRONMENT") == "production":
+        sys.exit("ERROR: API_SECRET must be set in production environment!")
+
+# Ensure SECRET_KEY is never None for type safety
+assert SECRET_KEY, "SECRET_KEY must not be empty"
 ALGO       = "HS256"
 TOKEN_MIN  = 120
 
@@ -90,7 +109,7 @@ class LoginData(BaseModel):
 async def login(data: LoginData):
     if not check_user(data.username, data.password):
         return JSONResponse(status_code=401, content={"msg": "Hatalı giriş"})
-    exp   = datetime.utcnow() + timedelta(minutes=TOKEN_MIN)
+    exp   = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MIN)
     token = jwt.encode({"sub": data.username, "exp": exp}, SECRET_KEY, algorithm=ALGO)
     return {"access_token": token, "token_type": "bearer", "user": {"username": data.username}}
 
@@ -387,6 +406,7 @@ def pending_list(trip_id: int, _: TokenData):
     cur.execute(
         """
         SELECT pkg_no, 1 AS qty, loaded
+
           FROM shipment_loaded
          WHERE trip_id = ?
         """,

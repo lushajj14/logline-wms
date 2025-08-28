@@ -81,8 +81,19 @@ def create_tables() -> None:
         cn.execute(ddl)
     _log.info("backorders / shipment_lines tabloları hazır.")
 
-# İlk import’ta tablo var mı diye kontrol et
-create_tables()
+# Lazy initialization - only create tables when needed
+_tables_created = False
+
+def ensure_tables():
+    """Ensure tables exist before any operation"""
+    global _tables_created
+    if not _tables_created:
+        try:
+            create_tables()
+            _tables_created = True
+        except Exception as e:
+            _log.warning(f"Could not create tables on startup: {e}")
+            # Will retry on first actual operation
 
 # -------------------------------------------------------------------- #
 #  BACK-ORDER KAYITLARI                                                #

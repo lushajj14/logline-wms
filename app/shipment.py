@@ -23,9 +23,7 @@ from typing import List, Dict, Any
 import os
 import logging
 import getpass
-from app.dao.logo import get_conn
-
-from app.dao.logo import exec_sql
+from app.dao.logo import get_conn, exec_sql, fetch_one
 
 log    = logging.getLogger(__name__)
 SCHEMA = os.getenv("SHIP_SCHEMA", "dbo")
@@ -314,14 +312,7 @@ def _fetch(sql: str, *params) -> List[Dict[str,Any]]:
         cols = [c[0].lower() for c in cur.description]
         return [dict(zip(cols,row)) for row in cur.fetchall()]
 
-def fetch_one(sql: str, *params) -> Dict[str, Any] | None:
-    with get_conn() as cn:
-        cur = cn.execute(sql, *params)
-        row = cur.fetchone()
-        if row is None:
-            return None
-        cols = [c[0].lower() for c in cur.description]
-        return dict(zip(cols, row))
+# fetch_one is now imported from app.dao.logo to avoid duplication
 
 def list_headers(trip_date: str) -> List[Dict[str,Any]]:
     sql = f"""

@@ -28,7 +28,7 @@ import csv
 from typing import List, Tuple, Dict
 
 import pandas as pd  # openpyxl + xlrd kurulu olmalı
-from app.dao.logo import get_connection  # DAO’daki ortak bağlantı
+from app.dao.logo import get_conn  # DAO'daki ortak bağlantı context manager
 
 # ────────────────────────────────────────────────────────────────────────────
 # MERGE  →  varsa UPDATE  |  yoksa INSERT
@@ -142,27 +142,26 @@ def load_file(path: str) -> Tuple[int, float, int]:
 
     rows = _read_csv(path_obj) if path_obj.suffix.lower() == ".csv" else _read_xlsx(path_obj)
 
-    conn = get_connection(False)  # tek transaction
-    cur = conn.cursor()
-    cur.fast_executemany = True
-
     t0 = time.time()
     err = 0
     done = 0
+    
+    # Use context manager to ensure proper resource cleanup
     try:
-        if rows:  # boş dosya kontrolü
-            cur.executemany(SQL, rows)  # tek seferde bütün satırlar
-            conn.commit()
-            done = len(rows)
+        with get_conn(autocommit=False) as conn:
+            cur = conn.cursor()
+            cur.fast_executemany = True
+            
+            if rows:  # boş dosya kontrolü
+                cur.executemany(SQL, rows)  # tek seferde bütün satırlar
+                conn.commit()
+                done = len(rows)
     except ValueError as exc:  # biçim hatası
         err = 1
         print(f"[import_barcodes] Biçim/başlık hatası → {exc}")
-        conn.rollback()
     except Exception as exc:  # DB veya diğer hatalar
         err = 1
         print(f"[import_barcodes] DB hatası → {exc}")
-        conn.rollback()
-    finally:
-        conn.close()
+    # Connection automatically closed by context manager
 
     return done, time.time() - t0, err
