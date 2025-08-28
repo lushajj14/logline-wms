@@ -133,6 +133,7 @@ def upsert_header(
     region: str = "",
     address1: str = "",
     invoice_root: str | None = None,
+    conn=None,  # Optional transaction connection
 ) -> None:
 
     sql = f"""
@@ -154,8 +155,10 @@ def upsert_header(
         VALUES (?,?,?,?,?,?,?,?);
     """
 
-    with get_conn(autocommit=True) as cn:
-        cn.execute(
+    if conn:
+        # Use provided transaction connection
+        cursor = conn.cursor()
+        cursor.execute(
             sql,
             # ---------- src ----------
             trip_date, order_no,
@@ -167,26 +170,26 @@ def upsert_header(
         )
 
         # Header ID'sini al
-        cur = cn.execute(
+        cursor.execute(
             f"SELECT id FROM {SCHEMA}.shipment_header WHERE trip_date = ? AND order_no = ?",
             trip_date, order_no
         )
-        header_row = cur.fetchone()
+        header_row = cursor.fetchone()
         if header_row:
-            trip_id = header_row[0]
+            trip_id = header_row.id if hasattr(header_row, 'id') else header_row[0]
 
             # Mevcut shipment_loaded kayıt sayısını al
-            cur = cn.execute(
+            cursor.execute(
                 f"SELECT COUNT(*) FROM {SCHEMA}.shipment_loaded WHERE trip_id = ?",
                 trip_id
             )
-            existing_count = cur.fetchone()[0]
+            existing_count = cursor.fetchone()[0]
 
             # Paket sayısı değişikliğini yönet
             if pkgs_total > existing_count:
                 # Eksik kayıtları oluştur
                 for pkg_no in range(existing_count + 1, pkgs_total + 1):
-                    cn.execute(
+                    cursor.execute(
                         f"""INSERT INTO {SCHEMA}.shipment_loaded 
                             (trip_id, pkg_no, loaded, loaded_by, loaded_time)
                             VALUES (?, ?, 0, NULL, NULL)""",
@@ -194,11 +197,58 @@ def upsert_header(
                     )
             elif pkgs_total < existing_count:
                 # Fazla kayıtları sil (paket sayısı azaltıldıysa)
-                cn.execute(
+                cursor.execute(
                     f"""DELETE FROM {SCHEMA}.shipment_loaded 
                         WHERE trip_id = ? AND pkg_no > ?""",
                     trip_id, pkgs_total
                 )
+    else:
+        # Use new connection with autocommit
+        with get_conn(autocommit=True) as cn:
+            cn.execute(
+                sql,
+                # ---------- src ----------
+                trip_date, order_no,
+                # ---------- UPDATE ----------
+                pkgs_total, customer_code, customer_name, region, address1, invoice_root,
+                # ---------- INSERT ----------
+                trip_date, order_no, pkgs_total,
+                customer_code, customer_name, region, address1, invoice_root
+            )
+
+            # Header ID'sini al
+            cur = cn.execute(
+                f"SELECT id FROM {SCHEMA}.shipment_header WHERE trip_date = ? AND order_no = ?",
+                trip_date, order_no
+            )
+            header_row = cur.fetchone()
+            if header_row:
+                trip_id = header_row[0]
+
+                # Mevcut shipment_loaded kayıt sayısını al
+                cur = cn.execute(
+                    f"SELECT COUNT(*) FROM {SCHEMA}.shipment_loaded WHERE trip_id = ?",
+                    trip_id
+                )
+                existing_count = cur.fetchone()[0]
+
+                # Paket sayısı değişikliğini yönet
+                if pkgs_total > existing_count:
+                    # Eksik kayıtları oluştur
+                    for pkg_no in range(existing_count + 1, pkgs_total + 1):
+                        cn.execute(
+                            f"""INSERT INTO {SCHEMA}.shipment_loaded 
+                                (trip_id, pkg_no, loaded, loaded_by, loaded_time)
+                                VALUES (?, ?, 0, NULL, NULL)""",
+                            trip_id, pkg_no
+                        )
+                elif pkgs_total < existing_count:
+                    # Fazla kayıtları sil (paket sayısı azaltıldıysa)
+                    cn.execute(
+                        f"""DELETE FROM {SCHEMA}.shipment_loaded 
+                            WHERE trip_id = ? AND pkg_no > ?""",
+                        trip_id, pkgs_total
+                    )
 
 
 # ────────────────────────────────────────────────────────────────
@@ -347,45 +397,50 @@ def mark_loaded(trip_id: int, pkg_no: int, *, item_code: str | None = None) -> i
     """
     • Aynı barkod ikinci kez okutulursa sayaç artmaz → 0 döner.
     • Koli sayımı (pkgs_loaded) tetikleyici (trg_loaded_aiu) tarafından güncellenir.
-    • pkgs_total’a dokunmaz; yalnızca eksikse tetikleyici genişletir.
+    • pkgs_total'a dokunmaz; yalnızca eksikse tetikleyici genişletir.
     • Başarı: 1   |   Yinelenen okuma: 0
+    • Race condition fixed with atomic MERGE operation
     """
     with get_conn(autocommit=True) as cn:
-
-        # 1) Barkod zaten yüklendi mi?
-        row = cn.execute(
-            "SELECT loaded FROM shipment_loaded "
-            "WHERE trip_id = ? AND pkg_no = ?", trip_id, pkg_no
-        ).fetchone()
-        if row and row[0] == 1:
-            return 0        # yinelenen okuma
-
-        # 2) INSERT  -veya-  UPDATE  → loaded = 1
-        if row:  # satır var, loaded = 0
-            cn.execute(
-                """UPDATE shipment_loaded
-                       SET loaded      = 1,
-                           loaded_by   = ?,
-                           loaded_time = GETDATE()
-                     WHERE trip_id = ? AND pkg_no = ?""",
-                getpass.getuser(), trip_id, pkg_no
-            )
-        else:    # satır yok
-            cn.execute(
-                """INSERT INTO shipment_loaded
-                       (trip_id, pkg_no, loaded, loaded_by, loaded_time)
-                     VALUES (?,?,1,?,GETDATE())""",
-                trip_id, pkg_no, getpass.getuser()
-            )
-
-        # 3) Opsiyonel – ilgili stok satır(lar)ını işaretle
+        # Use atomic MERGE to prevent race conditions
+        cursor = cn.cursor()
+        
+        # Atomic upsert with check for already loaded
+        cursor.execute(
+            f"""
+            MERGE {SCHEMA}.shipment_loaded AS tgt
+            USING (SELECT ? AS trip_id, ? AS pkg_no, ? AS loaded_by) src
+            ON tgt.trip_id = src.trip_id AND tgt.pkg_no = src.pkg_no
+            WHEN MATCHED AND tgt.loaded = 0 THEN
+                UPDATE SET 
+                    loaded = 1,
+                    loaded_by = src.loaded_by,
+                    loaded_time = GETDATE()
+            WHEN NOT MATCHED THEN
+                INSERT (trip_id, pkg_no, loaded, loaded_by, loaded_time)
+                VALUES (src.trip_id, src.pkg_no, 1, src.loaded_by, GETDATE())
+            OUTPUT INSERTED.loaded, DELETED.loaded AS old_loaded;
+            """,
+            trip_id, pkg_no, getpass.getuser()
+        )
+        
+        result = cursor.fetchone()
+        if not result:
+            # No row was affected - already loaded
+            return 0
+            
+        # Check if it was already loaded (old_loaded was 1)
+        if result.old_loaded == 1:
+            return 0
+        
+        # Optional – mark related stock lines
         if item_code:
-            cn.execute(
-                """
-                UPDATE shipment_lines
+            cursor.execute(
+                f"""
+                UPDATE {SCHEMA}.shipment_lines
                    SET loaded = 1
                  WHERE order_no = (SELECT order_no
-                                     FROM shipment_header
+                                     FROM {SCHEMA}.shipment_header
                                     WHERE id = ?)
                    AND item_code = ?""",
                 trip_id, item_code

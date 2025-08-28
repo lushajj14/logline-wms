@@ -26,6 +26,8 @@ from __future__ import annotations
 import time
 MAX_RETRY = 3
 RETRY_WAIT = 2  # saniye
+# Standardized connection timeout (seconds)
+CONN_TIMEOUT = int(os.getenv("DB_CONN_TIMEOUT", "10"))
 import os
 import logging
 from contextlib import contextmanager
@@ -84,7 +86,7 @@ def get_conn(*, autocommit: bool = False):
     last_exc = None
     for attempt in range(1, MAX_RETRY + 1):
         try:
-            conn = pyodbc.connect(CONN_STR, timeout=5, autocommit=autocommit)
+            conn = pyodbc.connect(CONN_STR, timeout=CONN_TIMEOUT, autocommit=autocommit)
             break                      # ➜ başarılı çıkış
         except pyodbc.Error as exc:
             last_exc = exc

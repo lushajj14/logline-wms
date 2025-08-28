@@ -34,6 +34,9 @@ DATABASE = os.getenv("LOGO_SQL_DB",     "logo")
 USER     = os.getenv("LOGO_SQL_USER",   "sa")
 PASSWORD = os.getenv("LOGO_SQL_PASSWORD", "gHm4952!")
 
+# Standardized connection timeout (seconds)
+CONN_TIMEOUT = int(os.getenv("DB_CONN_TIMEOUT", "10"))
+
 CONN_STR = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
     f"SERVER={SERVER};DATABASE={DATABASE};UID={USER};PWD={PASSWORD};"
@@ -45,7 +48,7 @@ def get_conn():
     """Context manager for database connections"""
     conn = None
     try:
-        conn = pyodbc.connect(CONN_STR, timeout=10)
+        conn = pyodbc.connect(CONN_STR, timeout=CONN_TIMEOUT)
         yield conn
     except pyodbc.Error as e:
         raise HTTPException(
@@ -59,7 +62,7 @@ def get_conn():
 def get_conn_cur() -> tuple[pyodbc.Connection, pyodbc.Cursor]:
     """Legacy function - use get_conn() instead"""
     try:
-        conn = pyodbc.connect(CONN_STR, timeout=10)
+        conn = pyodbc.connect(CONN_STR, timeout=CONN_TIMEOUT)
         return conn, conn.cursor()
     except pyodbc.Error as e:
         raise HTTPException(
@@ -147,19 +150,19 @@ def scan_pkg(trip_id: int, pkg_no: int, _: TokenData):
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT delivered FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ?",
+            "SELECT loaded FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ?",
             trip_id, pkg_no,
         )
         row = cur.fetchone()
         if not row:
             raise HTTPException(404, "Paket bulunamadı")
-        if row.delivered:
+        if row.loaded:
             return {"status": "duplicate"}
 
         cur.execute(
             """
             UPDATE shipment_loaded
-               SET delivered = 1, delivered_at = GETDATE(), delivered_by = SYSTEM_USER
+               SET loaded = 1, loaded_at = GETDATE(), loaded_by = SYSTEM_USER
              WHERE trip_id = ? AND pkg_no = ?
             """,
             trip_id, pkg_no,
@@ -184,9 +187,9 @@ def load_pkgs(data: dict, _: TokenData):
         cur.execute(
             f"""
             UPDATE shipment_loaded
-               SET delivered    = 1,
-                   delivered_at = GETDATE(),
-                   delivered_by = SYSTEM_USER
+               SET loaded    = 1,
+                   loaded_at = GETDATE(),
+                   loaded_by = SYSTEM_USER
              WHERE trip_id = ?
                AND pkg_no IN ({placeholders})
             """,
@@ -216,7 +219,7 @@ def trips(start: str, end: str, _: TokenData):
                AND h.closed = 0
                AND h.invoice_root IS NOT NULL
                AND h.qr_token     IS NOT NULL
-               AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 0)
+               AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 0)
              ORDER BY h.created_at;
             """,
             start, end,
@@ -327,11 +330,11 @@ def stats(from_date: str, to_date: str, _: TokenData):
         # 3) Başarı oranı
         cur.execute(
             """
-            SELECT SUM(delivered_cnt)*1.0 / NULLIF(SUM(pkgs_total),0)
+            SELECT SUM(loaded_cnt)*1.0 / NULLIF(SUM(pkgs_total),0)
               FROM (
                 SELECT
                   (SELECT COUNT(*) FROM shipment_loaded l
-                    WHERE l.trip_id = h.id AND delivered = 1) delivered_cnt,
+                    WHERE l.trip_id = h.id AND loaded = 1) loaded_cnt,
                   pkgs_total
                   FROM shipment_header h
                   WHERE loaded_at BETWEEN ? AND ?
@@ -345,11 +348,11 @@ def stats(from_date: str, to_date: str, _: TokenData):
         # 4) Ortalama teslim süresi (dk)
         cur.execute(
             """
-            SELECT AVG(DATEDIFF(min, loaded_at, delivered_at))
+            SELECT AVG(DATEDIFF(min, created_at, loaded_at))
               FROM shipment_header
              WHERE loaded_at BETWEEN ? AND ?
                AND closed = 1
-               AND delivered_at IS NOT NULL
+               AND loaded_at IS NOT NULL
             """,
             from_date, to_date,
         )
@@ -363,7 +366,7 @@ def stats(from_date: str, to_date: str, _: TokenData):
               JOIN shipment_header h ON h.id = l.trip_id
              WHERE h.closed = 0
                AND CAST(h.created_at AS date) = CAST(GETDATE() AS date)
-               AND l.delivered = 0
+               AND l.loaded = 0
             """)
         pending_today = cur.fetchone()[0]
 
@@ -379,17 +382,18 @@ def stats(from_date: str, to_date: str, _: TokenData):
 # --- /pending/{trip_id} ------------------------------------
 @app.get("/pending/{trip_id}")
 def pending_list(trip_id: int, _: TokenData):
-    conn, cur = get_conn_cur()
+    with get_conn() as conn:
+        cur = conn.cursor()
     cur.execute(
         """
-        SELECT pkg_no, 1 AS qty, delivered
+        SELECT pkg_no, 1 AS qty, loaded
           FROM shipment_loaded
          WHERE trip_id = ?
         """,
         trip_id,
     )
     return [
-        {"packageCode": r.pkg_no, "pieces": r.qty, "delivered": r.delivered}
+        {"packageCode": r.pkg_no, "pieces": r.qty, "delivered": r.loaded}
         for r in cur
     ]
 

@@ -6,7 +6,7 @@ from contextlib import contextmanager
 import pyodbc
 import logging
 from typing import Callable, Any
-from app.dao.logo import CONN_STR, MAX_RETRY
+from app.dao.logo import CONN_STR, MAX_RETRY, CONN_TIMEOUT
 import time
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def transaction_scope():
     # Retry logic for transient failures
     for attempt in range(1, MAX_RETRY + 1):
         try:
-            conn = pyodbc.connect(CONN_STR, timeout=10, autocommit=False)
+            conn = pyodbc.connect(CONN_STR, timeout=CONN_TIMEOUT, autocommit=False)
             break
         except pyodbc.Error as exc:
             last_exc = exc

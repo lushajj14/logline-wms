@@ -61,6 +61,7 @@ from app.dao.logo import (  # noqa: E402
     exec_sql,
     fetch_one,
 )
+from app.dao.transactions import transaction_scope  # noqa: E402
 import app.backorder as bo  # noqa: E402
 from app.shipment import upsert_header  # noqa: E402
 from app import toast  # noqa: E402
@@ -456,84 +457,109 @@ class ScannerPage(QWidget):
             QMessageBox.warning(self, "Logo", "Sipariş başlığı okunamadı")
             return
 
+        # Use transaction for all database operations
         try:
-            # ------------------------------------------------------------ 3-A
-            invoice_no = fetch_invoice_no(order_no)
-            inv_root   = invoice_no.split("-K")[0] if invoice_no else None
+            with transaction_scope() as conn:
+                cursor = conn.cursor()
+                
+                # ------------------------------------------------------------ 3-A
+                invoice_no = fetch_invoice_no(order_no)
+                inv_root   = invoice_no.split("-K")[0] if invoice_no else None
 
-            upsert_header(
-                order_no, trip_date, pkg_tot,
-                customer_code=hdr.get("cari_kodu") or "",
-                customer_name=hdr.get("cari_adi", "")[:60],
-                region=f"{hdr.get('genexp2','')} - {hdr.get('genexp3','')}".strip(" -"),
-                address1=hdr.get("adres", "")[:128],
-                invoice_root=inv_root
-            )
-
-            # ------- (REVİZE EDİLEN BLOK) ― yalnızca büyütme ---------------
-            cur = fetch_one(
-                "SELECT pkgs_total FROM shipment_header "
-                "WHERE order_no=? AND trip_date=?", order_no, trip_date
-            )
-            if cur and cur["pkgs_total"] < pkg_tot:          # sadece büyüt
-                exec_sql(
-                    "UPDATE shipment_header SET pkgs_total=? "
-                    "WHERE order_no=? AND trip_date=?",
-                    pkg_tot, order_no, trip_date
-                )
-            # -----------------------------------------------------------------
-
-            # -- başlık id’sini al
-            trip_id = fetch_one(
-                "SELECT id FROM shipment_header WHERE order_no=? AND trip_date=?",
-                order_no, trip_date
-            )["id"]
-
-            # ------------------------------------------------------------ 3-B
-            for k in range(1, pkg_tot + 1):
-                exec_sql(
-                    """
-                    MERGE dbo.shipment_loaded AS tgt
-                    USING (SELECT ? AS trip_id, ? AS pkg_no) src
-                    ON tgt.trip_id = src.trip_id AND tgt.pkg_no = src.pkg_no
-                    WHEN NOT MATCHED THEN
-                        INSERT (trip_id, pkg_no, loaded)
-                        VALUES (src.trip_id, src.pkg_no, 0);
-                    """,
-                    trip_id, k
+                # Create or update shipment header
+                upsert_header(
+                    order_no, trip_date, pkg_tot,
+                    customer_code=hdr.get("cari_kodu") or "",
+                    customer_name=hdr.get("cari_adi", "")[:60],
+                    region=f"{hdr.get('genexp2','')} - {hdr.get('genexp3','')}".strip(" -"),
+                    address1=hdr.get("adres", "")[:128],
+                    invoice_root=inv_root,
+                    conn=conn  # Pass transaction connection
                 )
 
-            # ------------------------------------------------------------ 3-C
-            for ln in self.lines:
-                code      = ln["item_code"]
-                wh        = ln["warehouse_id"]
-                ordered   = ln["qty_ordered"]
-                sent_qty  = self.sent.get(code, 0)
-                missing   = ordered - sent_qty
+                # Get header info with transaction connection
+                cursor.execute(
+                    "SELECT id, pkgs_total FROM shipment_header "
+                    "WHERE order_no=? AND trip_date=?", 
+                    order_no, trip_date
+                )
+                cur = cursor.fetchone()
+                if cur:
+                    existing_total = cur.pkgs_total
+                    trip_id = cur.id
+                    
+                    # Update count if different
+                    if existing_total != pkg_tot:
+                        cursor.execute(
+                            "UPDATE shipment_header SET pkgs_total=? "
+                            "WHERE id=?",
+                            pkg_tot, trip_id
+                        )
+                        
+                        # If reducing, delete excess package records
+                        if pkg_tot < existing_total:
+                            cursor.execute(
+                                "DELETE FROM shipment_loaded "
+                                "WHERE trip_id = ? AND pkg_no > ?",
+                                trip_id, pkg_tot
+                            )
+                else:
+                    raise Exception("Failed to create/update shipment header")
 
-                if sent_qty:
-                    bo.add_shipment(
-                        order_no, trip_date, code,
-                        warehouse_id=wh,
-                        invoiced_qty=ordered,
-                        qty_delta=sent_qty
-                    )
-                if missing:
-                    bo.insert_backorder(
-                        order_no, ln["line_id"], wh, code, missing
+                # ------------------------------------------------------------ 3-B
+                # Create package records
+                for k in range(1, pkg_tot + 1):
+                    cursor.execute(
+                        """
+                        MERGE dbo.shipment_loaded AS tgt
+                        USING (SELECT ? AS trip_id, ? AS pkg_no) src
+                        ON tgt.trip_id = src.trip_id AND tgt.pkg_no = src.pkg_no
+                        WHEN NOT MATCHED THEN
+                            INSERT (trip_id, pkg_no, loaded)
+                            VALUES (src.trip_id, src.pkg_no, 0);
+                        """,
+                        trip_id, k
                     )
 
-            # ------------------------------------------------------------ 3-D
-            # Fiş numarasını genexp5'e yaz
-            ficheno = hdr.get("ficheno", "")
-            genexp5_text = f"Sipariş No: {ficheno}" if ficheno else ""
-            
-            update_order_header(order_id,
-                                genexp4=f"PAKET SAYISI : {pkg_tot}",
-                                genexp5=genexp5_text)
-            update_order_status(order_id, 4)
-            queue_delete(order_id)
-            toast("STATUS 4 verildi", order_no)
+                # ------------------------------------------------------------ 3-C
+                # Process backorders and shipment lines
+                for ln in self.lines:
+                    code      = ln["item_code"]
+                    wh        = ln["warehouse_id"]
+                    ordered   = ln["qty_ordered"]
+                    sent_qty  = self.sent.get(code, 0)
+                    missing   = ordered - sent_qty
+
+                    if sent_qty:
+                        bo.add_shipment(
+                            order_no, trip_date, code,
+                            warehouse_id=wh,
+                            invoiced_qty=ordered,
+                            qty_delta=sent_qty,
+                            conn=conn  # Pass transaction connection
+                        )
+                    if missing > 0:
+                        bo.insert_backorder(
+                            order_no, ln["line_id"], wh, code, missing,
+                            conn=conn  # Pass transaction connection
+                        )
+
+                # ------------------------------------------------------------ 3-D
+                # Update Logo order status
+                ficheno = hdr.get("ficheno", "")
+                genexp5_text = f"Sipariş No: {ficheno}" if ficheno else ""
+                
+                cursor.execute(
+                    "UPDATE LG_025_ORFICHE SET STATUS = 4, GENEXP4 = ?, GENEXP5 = ? "
+                    "WHERE LOGICALREF = ?",
+                    f"PAKET SAYISI : {pkg_tot}", genexp5_text, order_id
+                )
+                
+                # Remove from queue
+                cursor.execute("DELETE FROM WMS_PICKQUEUE WHERE ORDER_ID = ?", order_id)
+                
+                # Transaction will auto-commit on success
+                toast("STATUS 4 verildi", order_no)
 
             # --- 4. UI temizlik / yenileme --------------------------------
             self.lines.clear()
