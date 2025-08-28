@@ -1,0 +1,13 @@
+PyQt5==5.15.*
+PyQt5-Qt5
+PyQt5-sip
+pyodbc
+pandas
+openpyxl
+xlrd
+python-dotenv
+qrcode 
+pillow
+qrcode[pil] 
+python-multipart>=0.0.7
+fastapi
