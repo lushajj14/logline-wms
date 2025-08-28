@@ -42,7 +42,7 @@ DEFAULTS: Dict[str, Any] = {
         "block_incomplete": True
     },
     "db": {
-        "server":    "78.135.108.160,1433",
+        "server":    "192.168.5.100,1433",
         "database":  "logo",
         "user":      "barkod1",
         "retry":     3,

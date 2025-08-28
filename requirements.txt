@@ -11,3 +11,7 @@ pillow
 qrcode[pil] 
 python-multipart>=0.0.7
 fastapi
+python-jose[cryptography]
+pyinstaller
+reportlab
+numpy

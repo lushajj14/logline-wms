@@ -56,7 +56,7 @@ if not all([SERVER, DATABASE, USER, PASSWORD]):
         "Please set environment variables: LOGO_SQL_SERVER, LOGO_SQL_DB, LOGO_SQL_USER, LOGO_SQL_PASSWORD",
         RuntimeWarning
     )
-    SERVER     = SERVER or "78.135.108.160,1433"
+    SERVER     = SERVER or "192.168.5.100,1433"
     DATABASE   = DATABASE or "logo"
     USER       = USER or "barkod1"
     PASSWORD   = PASSWORD or "Barkod14*"  # This should NEVER be in production!

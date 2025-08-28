@@ -48,7 +48,7 @@ assert SECRET_KEY, "SECRET_KEY must not be empty"
 ALGO       = "HS256"
 TOKEN_MIN  = 120
 
-SERVER   = os.getenv("LOGO_SQL_SERVER", "78.135.108.160,1433")
+SERVER   = os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433")
 DATABASE = os.getenv("LOGO_SQL_DB",     "logo")
 USER     = os.getenv("LOGO_SQL_USER",   "sa")
 PASSWORD = os.getenv("LOGO_SQL_PASSWORD", "gHm4952!")
