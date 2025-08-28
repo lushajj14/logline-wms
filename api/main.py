@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Annotated
 import os
 import pyodbc
+from contextlib import contextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -15,7 +16,16 @@ from jose import jwt, JWTError
 from pydantic import BaseModel
 
 # ───────────────────────────── Ayarlar
-SECRET_KEY = os.getenv("API_SECRET", "SuperGizliAnahtar123")
+# API Security - MUST use secure secret in production
+SECRET_KEY = os.getenv("API_SECRET")
+if not SECRET_KEY:
+    import warnings
+    warnings.warn(
+        "SECURITY WARNING: Using default API secret. "
+        "Please set API_SECRET environment variable with a secure random string.",
+        RuntimeWarning
+    )
+    SECRET_KEY = "SuperGizliAnahtar123"  # NEVER use this in production!
 ALGO       = "HS256"
 TOKEN_MIN  = 120
 
@@ -30,9 +40,26 @@ CONN_STR = (
     "Encrypt=no;TrustServerCertificate=yes;"
 )
 
-def get_conn_cur() -> tuple[pyodbc.Connection, pyodbc.Cursor]:
+@contextmanager
+def get_conn():
+    """Context manager for database connections"""
+    conn = None
     try:
-        conn = pyodbc.connect(CONN_STR, timeout=3)
+        conn = pyodbc.connect(CONN_STR, timeout=10)
+        yield conn
+    except pyodbc.Error as e:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"DB bağlantı hatası: {e}",
+        )
+    finally:
+        if conn:
+            conn.close()
+
+def get_conn_cur() -> tuple[pyodbc.Connection, pyodbc.Cursor]:
+    """Legacy function - use get_conn() instead"""
+    try:
+        conn = pyodbc.connect(CONN_STR, timeout=10)
         return conn, conn.cursor()
     except pyodbc.Error as e:
         raise HTTPException(
@@ -83,60 +110,62 @@ TokenData = Annotated[dict, Depends(get_token)]
 # ───────────────────────────── Basit ping
 @app.get("/dbping")
 def dbping(_: TokenData):
-    conn, cur = get_conn_cur()
-    cur.execute("SELECT 1")
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
     return {"ok": True}
 
 # ───────────────────────────── QR okuma
 @app.post("/scan/qr")
 def scan_qr(qr_token: str, _: TokenData):
-    conn, cur = get_conn_cur()
-    cur.execute(
-        """
-        SELECT id,
-               invoice_root,
-               customer_code,
-               pkgs_total
-          FROM shipment_header
-         WHERE qr_token = ?
-        """,
-        qr_token,
-    )
-    row = cur.fetchone()
-    if not row:
-        raise HTTPException(404, "QR bulunamadı")
-    return {
-        "trip_id":       row.id,
-        "invoice_root":  row.invoice_root,
-        "customer_code": row.customer_code,
-        "pkgs_total":    row.pkgs_total,
-    }
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id,
+                   invoice_root,
+                   customer_code,
+                   pkgs_total
+              FROM shipment_header
+             WHERE qr_token = ?
+            """,
+            qr_token,
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "QR bulunamadı")
+        return {
+            "trip_id":       row.id,
+            "invoice_root":  row.invoice_root,
+            "customer_code": row.customer_code,
+            "pkgs_total":    row.pkgs_total,
+        }
 
 # ───────────────────────────── Tek barkod (opsiyonel eski)
 @app.post("/scan/pkg")
 def scan_pkg(trip_id: int, pkg_no: int, _: TokenData):
-    conn, cur = get_conn_cur()
-    cur.execute(
-        "SELECT delivered FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ?",
-        trip_id, pkg_no,
-    )
-    row = cur.fetchone()
-    if not row:
-        raise HTTPException(404, "Paket bulunamadı")
-    if row.delivered:
-        return {"status": "duplicate"}
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT delivered FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ?",
+            trip_id, pkg_no,
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Paket bulunamadı")
+        if row.delivered:
+            return {"status": "duplicate"}
 
-    cur.execute(
-        """
-        UPDATE shipment_loaded
-           SET delivered = 1, delivered_at = GETDATE(), delivered_by = SYSTEM_USER
-         WHERE trip_id = ? AND pkg_no = ?
-        """,
-        trip_id, pkg_no,
-    )
-    conn.commit()
-    return {"status": "ok"}
+        cur.execute(
+            """
+            UPDATE shipment_loaded
+               SET delivered = 1, delivered_at = GETDATE(), delivered_by = SYSTEM_USER
+             WHERE trip_id = ? AND pkg_no = ?
+            """,
+            trip_id, pkg_no,
+        )
+        conn.commit()
+        return {"status": "ok"}
 
 # ───────────────────────────── TOPLU teslim /load_pkgs
 @app.post("/load_pkgs")
@@ -148,101 +177,105 @@ def load_pkgs(data: dict, _: TokenData):
     pkgs    = data.get("pkgs") or []
     if not pkgs:
         raise HTTPException(400, "Paket listesi boş")
-    conn, cur = get_conn_cur()
-    placeholders = ",".join("?" * len(pkgs))
-    cur.execute(
-        f"""
-        UPDATE shipment_loaded
-           SET delivered    = 1,
-               delivered_at = GETDATE(),
-               delivered_by = SYSTEM_USER
-         WHERE trip_id = ?
-           AND pkg_no IN ({placeholders})
-        """,
-        (trip_id, *pkgs),
-    )
-    conn.commit()
-    return {"updated": cur.rowcount}
+    
+    with get_conn() as conn:
+        cur = conn.cursor()
+        placeholders = ",".join("?" * len(pkgs))
+        cur.execute(
+            f"""
+            UPDATE shipment_loaded
+               SET delivered    = 1,
+                   delivered_at = GETDATE(),
+                   delivered_by = SYSTEM_USER
+             WHERE trip_id = ?
+               AND pkg_no IN ({placeholders})
+            """,
+            (trip_id, *pkgs),
+        )
+        conn.commit()
+        return {"updated": cur.rowcount}
 
 # --- /trips -------------------------------------------------
 @app.get("/trips")
 def trips(start: str, end: str, _: TokenData):
-    conn, cur = get_conn_cur()
-    cur.execute(
-        """
-        SELECT h.id,
-               h.order_no,
-               h.invoice_root,
-               h.customer_code,
-               h.customer_name,
-               h.address1     AS customer_addr,
-               h.region,
-               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id) AS pkgs_total,
-               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1) AS pkgs_loaded
-          FROM shipment_header h
-         WHERE h.created_at BETWEEN ? AND ?
-           AND h.closed = 0
-           AND h.invoice_root IS NOT NULL
-           AND h.qr_token     IS NOT NULL
-           AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 0)
-         ORDER BY h.created_at;
-        """,
-        start, end,
-    )
-    return [
-        {
-            "id": r.id,
-            "order_no": r.order_no,
-            "invoice_root": r.invoice_root,
-            "customer_code": r.customer_code,
-            "customer_name": r.customer_name,
-            "customer_addr": r.customer_addr,
-            "region": r.region,
-            "pkgs_total": r.pkgs_total,
-            "pkgs_loaded": r.pkgs_loaded,
-            "status": f"{r.pkgs_loaded}/{r.pkgs_total}",
-        }
-        for r in cur
-    ]
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT h.id,
+                   h.order_no,
+                   h.invoice_root,
+                   h.customer_code,
+                   h.customer_name,
+                   h.address1     AS customer_addr,
+                   h.region,
+                   (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id) AS pkgs_total,
+                   (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1) AS pkgs_loaded
+              FROM shipment_header h
+             WHERE h.created_at BETWEEN ? AND ?
+               AND h.closed = 0
+               AND h.invoice_root IS NOT NULL
+               AND h.qr_token     IS NOT NULL
+               AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 0)
+             ORDER BY h.created_at;
+            """,
+            start, end,
+        )
+        return [
+            {
+                "id": r.id,
+                "order_no": r.order_no,
+                "invoice_root": r.invoice_root,
+                "customer_code": r.customer_code,
+                "customer_name": r.customer_name,
+                "customer_addr": r.customer_addr,
+                "region": r.region,
+                "pkgs_total": r.pkgs_total,
+                "pkgs_loaded": r.pkgs_loaded,
+                "status": f"{r.pkgs_loaded}/{r.pkgs_total}",
+            }
+            for r in cur
+        ]
 
 # --- /trips_delivered ---------------------------------------
 @app.get("/trips_delivered")
 def trips_delivered(start: str, end: str, _: TokenData):
-    conn, cur = get_conn_cur()
-    cur.execute(
-        """
-        SELECT h.id,
-               h.order_no,
-               h.invoice_root,
-               h.customer_code,
-               h.customer_name,
-               h.address1     AS customer_addr,
-               h.region,
-               h.pkgs_total,
-               h.pkgs_loaded,
-               h.loaded_at
-          FROM shipment_header h
-         WHERE h.created_at BETWEEN ? AND ?
-           AND h.closed = 1
-         ORDER BY h.loaded_at DESC;
-        """,
-        start, end,
-    )
-    return [
-        {
-            "id": r.id,
-            "order_no": r.order_no,
-            "invoice_root": r.invoice_root,
-            "customer_code": r.customer_code,
-            "customer_name": r.customer_name,
-            "customer_addr": r.customer_addr,
-            "region": r.region,
-            "pkgs_total": r.pkgs_total,
-            "pkgs_loaded": r.pkgs_loaded,
-            "loaded_at":   r.loaded_at,
-        }
-        for r in cur
-    ]
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT h.id,
+                   h.order_no,
+                   h.invoice_root,
+                   h.customer_code,
+                   h.customer_name,
+                   h.address1     AS customer_addr,
+                   h.region,
+                   h.pkgs_total,
+                   h.pkgs_loaded,
+                   h.loaded_at
+              FROM shipment_header h
+             WHERE h.created_at BETWEEN ? AND ?
+               AND h.closed = 1
+             ORDER BY h.loaded_at DESC;
+            """,
+            start, end,
+        )
+        return [
+            {
+                "id": r.id,
+                "order_no": r.order_no,
+                "invoice_root": r.invoice_root,
+                "customer_code": r.customer_code,
+                "customer_name": r.customer_name,
+                "customer_addr": r.customer_addr,
+                "region": r.region,
+                "pkgs_total": r.pkgs_total,
+                "pkgs_loaded": r.pkgs_loaded,
+                "loaded_at":   r.loaded_at,
+            }
+            for r in cur
+        ]
 
 
 
@@ -260,86 +293,87 @@ def stats(from_date: str, to_date: str, _: TokenData):
         pendingToday  :42
       }
     """
-    conn, cur = get_conn_cur()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        
+        # 1) Günlük teslim miktarı
+        cur.execute(
+            """
+            SELECT CAST(loaded_at AS date) d, SUM(pkgs_total) q
+              FROM shipment_header
+             WHERE loaded_at BETWEEN ? AND ?
+               AND closed = 1
+             GROUP BY CAST(loaded_at AS date)
+             ORDER BY d
+            """,
+            from_date, to_date,
+        )
+        daily = [{"date": r.d.isoformat(), "qty": r.q} for r in cur]
 
-    # 1) Günlük teslim miktarı
-    cur.execute(
-        """
-        SELECT CAST(loaded_at AS date) d, SUM(pkgs_total) q
-          FROM shipment_header
-         WHERE loaded_at BETWEEN ? AND ?
-           AND closed = 1
-         GROUP BY CAST(loaded_at AS date)
-         ORDER BY d
-        """,
-        from_date, to_date,
-    )
-    daily = [{"date": r.d.isoformat(), "qty": r.q} for r in cur]
+        # 2) En çok koli giden 5 müşteri
+        cur.execute(
+            """
+            SELECT TOP 5 customer_name, SUM(pkgs_total) q
+              FROM shipment_header
+             WHERE loaded_at BETWEEN ? AND ?
+               AND closed = 1
+             GROUP BY customer_name
+             ORDER BY q DESC
+            """,
+            from_date, to_date,
+        )
+        top = [{"name": r.customer_name, "qty": r.q} for r in cur]
 
-    # 2) En çok koli giden 5 müşteri
-    cur.execute(
-        """
-        SELECT TOP 5 customer_name, SUM(pkgs_total) q
-          FROM shipment_header
-         WHERE loaded_at BETWEEN ? AND ?
-           AND closed = 1
-         GROUP BY customer_name
-         ORDER BY q DESC
-        """,
-        from_date, to_date,
-    )
-    top = [{"name": r.customer_name, "qty": r.q} for r in cur]
+        # 3) Başarı oranı
+        cur.execute(
+            """
+            SELECT SUM(delivered_cnt)*1.0 / NULLIF(SUM(pkgs_total),0)
+              FROM (
+                SELECT
+                  (SELECT COUNT(*) FROM shipment_loaded l
+                    WHERE l.trip_id = h.id AND delivered = 1) delivered_cnt,
+                  pkgs_total
+                  FROM shipment_header h
+                  WHERE loaded_at BETWEEN ? AND ?
+                    AND closed = 1
+              ) x
+            """,
+            from_date, to_date,
+        )
+        success = cur.fetchone()[0] or 0
 
-    # 3) Başarı oranı
-    cur.execute(
-        """
-        SELECT SUM(delivered_cnt)*1.0 / NULLIF(SUM(pkgs_total),0)
-          FROM (
-            SELECT
-              (SELECT COUNT(*) FROM shipment_loaded l
-                WHERE l.trip_id = h.id AND delivered = 1) delivered_cnt,
-              pkgs_total
-              FROM shipment_header h
-              WHERE loaded_at BETWEEN ? AND ?
-                AND closed = 1
-          ) x
-        """,
-        from_date, to_date,
-    )
-    success = cur.fetchone()[0] or 0
+        # 4) Ortalama teslim süresi (dk)
+        cur.execute(
+            """
+            SELECT AVG(DATEDIFF(min, loaded_at, delivered_at))
+              FROM shipment_header
+             WHERE loaded_at BETWEEN ? AND ?
+               AND closed = 1
+               AND delivered_at IS NOT NULL
+            """,
+            from_date, to_date,
+        )
+        avg_min = cur.fetchone()[0] or 0
 
-    # 4) Ortalama teslim süresi (dk)
-    cur.execute(
-        """
-        SELECT AVG(DATEDIFF(min, loaded_at, delivered_at))
-          FROM shipment_header
-         WHERE loaded_at BETWEEN ? AND ?
-           AND closed = 1
-           AND delivered_at IS NOT NULL
-        """,
-        from_date, to_date,
-    )
-    avg_min = cur.fetchone()[0] or 0
+        # 5) Bugün kalan bekleyen koli
+        cur.execute(
+            """
+            SELECT COUNT(*)
+              FROM shipment_loaded l
+              JOIN shipment_header h ON h.id = l.trip_id
+             WHERE h.closed = 0
+               AND CAST(h.created_at AS date) = CAST(GETDATE() AS date)
+               AND l.delivered = 0
+            """)
+        pending_today = cur.fetchone()[0]
 
-    # 5) Bugün kalan bekleyen koli
-    cur.execute(
-        """
-        SELECT COUNT(*)
-          FROM shipment_loaded l
-          JOIN shipment_header h ON h.id = l.trip_id
-         WHERE h.closed = 0
-           AND CAST(h.created_at AS date) = CAST(GETDATE() AS date)
-           AND l.delivered = 0
-        """)
-    pending_today = cur.fetchone()[0]
-
-    return {
-        "dailyDelivered": daily,
-        "topCustomers"  : top,
-        "successRate"   : round(success, 2),
-        "avgDurationMin": int(avg_min),
-        "pendingToday"  : pending_today,
-    }
+        return {
+            "dailyDelivered": daily,
+            "topCustomers"  : top,
+            "successRate"   : round(success, 2),
+            "avgDurationMin": int(avg_min),
+            "pendingToday"  : pending_today,
+        }
 
 
 # --- /pending/{trip_id} ------------------------------------

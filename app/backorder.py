@@ -17,12 +17,14 @@ import logging, os
 from app.dao.logo import get_conn   # aynı ODBC bağlantısını kullanıyoruz
 
 _log = logging.getLogger(__name__)
-SCHEMA = os.getenv("BACKORDER_SCHEMA", "dbo")
+# SQL injection güvenliği için şema adını sabit tut
+SCHEMA = "dbo"  # Environment variable yerine sabit değer kullan
 
 # -------------------------------------------------------------------- #
 #  TABLOLARI OLUŞTUR – yalnızca ilk import’ta                                 #
 # -------------------------------------------------------------------- #
 def create_tables() -> None:
+    # Şema adı artık güvenli bir sabit
     ddl = f"""
     IF NOT EXISTS (SELECT * FROM sys.objects WHERE name='backorders')
     CREATE TABLE {SCHEMA}.backorders(
@@ -35,7 +37,8 @@ def create_tables() -> None:
         eta_date     DATE NULL,
         fulfilled    BIT         DEFAULT 0,
         created_at   DATETIME    DEFAULT GETDATE(),
-        fulfilled_at DATETIME    NULL
+        fulfilled_at DATETIME    NULL,
+        last_update  DATETIME    DEFAULT GETDATE()
     );
 
     IF NOT EXISTS (SELECT * FROM sys.objects WHERE name='shipment_lines')
@@ -87,19 +90,24 @@ create_tables()
 def insert_backorder(order_no:str, line_id:int, warehouse_id:int,
                      item_code:str, qty_missing:float, eta_date:Optional[str]=None):
     """
-    Aynı sipariş + stok için kayıt varsa qty_missing ↑ artar (idempotent).
+    Aynı sipariş + stok için kayıt varsa qty_missing değerini günceller (idempotent).
+    NOT: Artık qty_missing değerini toplamıyor, doğrudan set ediyor.
     """
+    # Parametreli sorgu - şema adı güvenli sabit
     sql_sel = f"""SELECT id, qty_missing FROM {SCHEMA}.backorders
                   WHERE fulfilled=0 AND order_no=? AND item_code=?"""
+    # Parametreli insert - SQL injection güvenli
     sql_ins = f"""INSERT INTO {SCHEMA}.backorders
                   (order_no,line_id,warehouse_id,item_code,qty_missing,eta_date)
                   VALUES (?,?,?,?,?,?)"""
+    # Parametreli update - SQL injection güvenli
     sql_upd = f"""UPDATE {SCHEMA}.backorders
-                  SET qty_missing = qty_missing + ?
+                  SET qty_missing = ?, last_update = GETDATE()
                   WHERE id=?"""
     with get_conn(autocommit=True) as cn:
         row = cn.execute(sql_sel, order_no, item_code).fetchone()
         if row:
+            # Doğrudan yeni değeri set et, toplama yapma
             cn.execute(sql_upd, qty_missing, row.id)
         else:
             cn.execute(sql_ins,

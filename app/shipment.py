@@ -182,8 +182,9 @@ def upsert_header(
             )
             existing_count = cur.fetchone()[0]
 
-            # Eğer yeni paket sayısı mevcut kayıt sayısından fazlaysa, eksik kayıtları oluştur
+            # Paket sayısı değişikliğini yönet
             if pkgs_total > existing_count:
+                # Eksik kayıtları oluştur
                 for pkg_no in range(existing_count + 1, pkgs_total + 1):
                     cn.execute(
                         f"""INSERT INTO {SCHEMA}.shipment_loaded 
@@ -191,6 +192,13 @@ def upsert_header(
                             VALUES (?, ?, 0, NULL, NULL)""",
                         trip_id, pkg_no
                     )
+            elif pkgs_total < existing_count:
+                # Fazla kayıtları sil (paket sayısı azaltıldıysa)
+                cn.execute(
+                    f"""DELETE FROM {SCHEMA}.shipment_loaded 
+                        WHERE trip_id = ? AND pkg_no > ?""",
+                    trip_id, pkgs_total
+                )
 
 
 # ────────────────────────────────────────────────────────────────

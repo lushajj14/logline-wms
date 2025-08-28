@@ -6,13 +6,13 @@
 • “Tamamla” → sevkiyat + back‑order + STATUS 4 + kuyruğu temizler
 """
 from __future__ import annotations
-from decimal import Decimal   # dosyanın üstünde varsa tekrar eklemeyin
 import logging
 import sys
+import threading
+import getpass
 from pathlib import Path
 from datetime import date
 from typing import Dict, List
-import getpass
 from app.settings import get as cfg
 import app.settings as st
 from app.dao.logo import (
@@ -57,39 +57,16 @@ from app.dao.logo import (  # noqa: E402
     fetch_order_header,
     fetch_invoice_no,
     queue_fetch,
-    queue_inc,  # noqa: F811
     queue_delete,
+    exec_sql,
+    fetch_one,
 )
 import app.backorder as bo  # noqa: E402
 from app.shipment import upsert_header  # noqa: E402
 from app import toast  # noqa: E402
-from app.dao.logo import exec_sql  # Add this import for exec_sql  # noqa: E402
-from app.dao.logo import fetch_one  # Add this import for fetch_one  # noqa: E402
 
-def barcode_xref_lookup(barcode: str, warehouse_id: str | None = None):
-    """
-    Barkodu barcode_xref tablosunda arar.
-      • warehouse_id verilmişse → o depoda arar
-      • None ise                → depoya bakmadan ilk eşleşmeyi döndürür
-    Dönen: (item_code, multiplier)  |  (None, None)
-    """
-    try:
-        if warehouse_id is not None:
-            row = fetch_one(
-                "SELECT TOP 1 item_code, multiplier "
-                "FROM barcode_xref WHERE barcode=? AND warehouse_id=?",
-                barcode, warehouse_id
-            )
-        else:
-            row = fetch_one(
-                "SELECT TOP 1 item_code, multiplier "
-                "FROM barcode_xref WHERE barcode=?", barcode
-            )
-        if row:
-            return row["item_code"], row.get("multiplier", 1)
-    except Exception as exc:
-        print(f"[barcode_xref_lookup] DB error: {exc}")
-    return None, None
+# Barcode lookup moved to centralized service
+from app.services.barcode_service import barcode_xref_lookup, find_item_by_barcode
 
 
 
@@ -134,7 +111,7 @@ class ScannerPage(QWidget):
             # Performans optimizasyonları için cache
             self._barcode_cache: Dict[str, tuple] = {}  # barkod lookup cache
             self._warehouse_set: set = set()  # mevcut siparişin depoları
-            self._processing_scan = False  # çoklu scan önleme
+            self._scan_lock = threading.Lock()  # Thread-safe scan işlemi için lock
             
             self._build_ui()
             self.refresh_orders()
@@ -300,10 +277,6 @@ class ScannerPage(QWidget):
      
     # ---- Barkod / Kod okutuldu ----
     def on_scan(self) -> None:
-        # Çoklu scan önleme
-        if self._processing_scan:
-            return
-            
         raw = self.entry.text().strip()
         self.entry.clear()
         
@@ -343,15 +316,18 @@ class ScannerPage(QWidget):
                               f"Bu barkod farklı depo için (Depo: {detected_wh})!\nBu siparişin depoları: {', '.join(self._warehouse_set)}")
             return
 
-        self._processing_scan = True
+        # Thread-safe scan işlemi
+        if not self._scan_lock.acquire(blocking=False):
+            return  # Başka bir scan işlemi devam ediyor
         
         try:
-            # Cache kontrolü
+            # Cache kontrolü - lock içinde yapılmalı
             cache_key = f"{raw}_{self.current_order['order_id']}"
             if cache_key in self._barcode_cache:
                 matched_line, qty_inc = self._barcode_cache[cache_key]
             else:
                 matched_line, qty_inc = self._find_matching_line(raw)
+                # Cache güncelleme lock içinde olmalı
                 self._barcode_cache[cache_key] = (matched_line, qty_inc)
 
             if not matched_line:
@@ -366,8 +342,8 @@ class ScannerPage(QWidget):
             ordered   = float(matched_line["qty_ordered"])
             sent_now  = float(self.sent.get(code, 0))
 
-            if isinstance(qty_inc, Decimal):
-                qty_inc = float(qty_inc)
+            # qty_inc zaten float olarak geliyor, Decimal kontrolüne gerek yok
+            qty_inc = float(qty_inc) if qty_inc else 1.0
             over_tol = float(self._over_tol or 0)
 
             if sent_now + qty_inc > ordered + over_tol:
@@ -385,67 +361,43 @@ class ScannerPage(QWidget):
                              warehouse_id=matched_line["warehouse_id"])
                 return
 
-            # Normal işlem - Asenkron ses
-            QTimer.singleShot(0, snd_ok.play)
-            queue_inc(self.current_order["order_id"], code, qty_inc)
-            self.sent[code] = sent_now + qty_inc
-            self._update_single_row(code, sent_now + qty_inc)
+            # Database ve local state güncelleme - atomic olmalı
+            try:
+                # Önce database güncelle
+                queue_inc(self.current_order["order_id"], code, qty_inc)
+                
+                # Database başarılıysa local state güncelle
+                self.sent[code] = sent_now + qty_inc
+                
+                # UI güncelle
+                self._update_single_row(code, sent_now + qty_inc)
+                
+                # Başarı sesi - en son
+                QTimer.singleShot(0, snd_ok.play)
+            except Exception as e:
+                # Hata durumunda cache'i temizle
+                if cache_key in self._barcode_cache:
+                    del self._barcode_cache[cache_key]
+                snd_err.play()
+                QMessageBox.critical(self, "Database Hatası", f"Kayıt güncellenemedi: {e}")
+                return
             
         finally:
-            self._processing_scan = False
+            self._scan_lock.release()
 
     def _find_matching_line(self, raw: str) -> tuple:
         """Barkod eşleştirme optimized version"""
-        # 1) Manuel stok kodu eşleşmesi
-        matched_line = next(
-            (ln for ln in self.lines if ln["item_code"].lower() == raw.lower()),
-            None
-        )
-        qty_inc = 1
-
-        # 2) Depo ön-ekleri çözümü
-        if not matched_line:
-            for ln in self.lines:
-                code = resolve_barcode_prefix(raw, ln["warehouse_id"])
-                if code and code == ln["item_code"]:
-                    matched_line = ln
-                    break
-
-        # 3) barcode_xref tablosu - sadece mevcut depolarda ara
-        if not matched_line:
-            for wh_try in self._warehouse_set:
-                itm_code, mult = barcode_xref_lookup(raw, wh_try)
-                if itm_code:
-                    matched_line = next(
-                        (ln for ln in self.lines
-                        if ln["item_code"] == itm_code
-                        and ln["warehouse_id"] == wh_try),
-                        None
-                    )
-                    if matched_line:
-                        qty_inc = float(mult or 1)
-                        break
-
-        # 4) Karmaşık barkod formatı çözme (örn: "44-1800/A-T10009-24-K10-1")
-        if not matched_line and "/" in raw and "-K" in raw:
-            # Barkodun "/" öncesi kısmını çıkar (stok kodu parçası)
-            stock_part = raw.split("/")[0].strip()
-            
-            # Bu parçayı barcode_xref'te ara
-            for wh_try in self._warehouse_set:
-                itm_code, mult = barcode_xref_lookup(stock_part, wh_try)
-                if itm_code:
-                    matched_line = next(
-                        (ln for ln in self.lines
-                        if ln["item_code"] == itm_code
-                        and ln["warehouse_id"] == wh_try),
-                        None
-                    )
-                    if matched_line:
-                        qty_inc = float(mult or 1)
-                        break
-
-        return matched_line, qty_inc
+        try:
+            # Use centralized barcode service
+            matched_line, qty_inc = find_item_by_barcode(raw, self.lines, self._warehouse_set)
+            return matched_line, qty_inc
+        except Exception as e:
+            # Database error - show actual error to user
+            logger.error(f"Barcode lookup error: {e}")
+            snd_err.play()
+            QMessageBox.critical(self, "Database Hatası", 
+                                f"Barkod kontrolü sırasında hata oluştu:\n{str(e)}\n\nLütfen IT desteğe başvurun.")
+            return None, 1
 
     def _update_single_row(self, item_code: str, new_sent: float):
         """Tek satırı güncelle - tüm tabloyu yeniden çizmek yerine"""

@@ -70,6 +70,31 @@ def make_backorder_labels(
                 genexp5=ord_no,
             )
             log.info("GENEXP4/5 güncellendi → %s", ord_no)
+            
+            # shipment_header tablosunu da güncelle (eğer varsa)
+            from app.shipment import upsert_header
+            from app.dao.logo import fetch_one, exec_sql
+            
+            # Mevcut shipment header'ı bul
+            ship_hdr = fetch_one(
+                "SELECT id, trip_date, customer_code, customer_name, region, address1, invoice_root "
+                "FROM shipment_header WHERE order_no = ?", 
+                ord_no
+            )
+            
+            if ship_hdr:
+                # shipment_header'ı güncelle
+                upsert_header(
+                    order_no=ord_no,
+                    trip_date=ship_hdr["trip_date"],
+                    pkgs_total=pkg_tot,  # Yeni paket sayısı
+                    customer_code=ship_hdr["customer_code"],
+                    customer_name=ship_hdr["customer_name"],
+                    region=ship_hdr["region"],
+                    address1=ship_hdr["address1"],
+                    invoice_root=ship_hdr["invoice_root"]
+                )
+                log.info("shipment_header güncellendi: %s paket → %s", ord_no, pkg_tot)
 
             # Yeni etiket üretimi
             create_labels(
@@ -77,22 +102,12 @@ def make_backorder_labels(
                 force=force,
                 footer="EGS"  # Eksik Gönderilen Sevkiyat dipnotu
             )
-            log.info("Etiketler yeniden üretildi → %s", ord_no)
+            log.info("Etiketler üretildi → %s", ord_no)
+            done.add(ord_no)
         except Exception as exc:
             log.error("Header güncelleme veya etiket üretim hatası %s: %s", ord_no, exc)
             continue
 
-        try:
-            #  PDF üret – “Eksik Gönderilen Sevkiyat” dipnotuyla
-            create_labels(
-                ord_no,
-                force=force,
-                footer="EGS"      #  ← EKLENDİ
-            )
-            log.info("Etiket üretildi → %s", ord_no)
-            done.add(ord_no)
-        except Exception as exc:
-            log.error("Etiket üretim hatası %s: %s", ord_no, exc)
 
 
 # --------------------------------------------------------------------------- #

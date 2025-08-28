@@ -38,10 +38,25 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Bağlantı Ayarları –  env > fallback
 # ---------------------------------------------------------------------------
-SERVER     = os.getenv("LOGO_SQL_SERVER", "78.135.108.160,1433")
-DATABASE   = os.getenv("LOGO_SQL_DB", "logo")
-USER       = os.getenv("LOGO_SQL_USER", "barkod1")
-PASSWORD   = os.getenv("LOGO_SQL_PASSWORD", "Barkod14*")
+# Database credentials - MUST be set via environment variables for security
+SERVER     = os.getenv("LOGO_SQL_SERVER")
+DATABASE   = os.getenv("LOGO_SQL_DB")
+USER       = os.getenv("LOGO_SQL_USER")
+PASSWORD   = os.getenv("LOGO_SQL_PASSWORD")
+
+# Validate required environment variables
+if not all([SERVER, DATABASE, USER, PASSWORD]):
+    # For backwards compatibility, use defaults but warn
+    import warnings
+    warnings.warn(
+        "SECURITY WARNING: Using default database credentials. "
+        "Please set environment variables: LOGO_SQL_SERVER, LOGO_SQL_DB, LOGO_SQL_USER, LOGO_SQL_PASSWORD",
+        RuntimeWarning
+    )
+    SERVER     = SERVER or "78.135.108.160,1433"
+    DATABASE   = DATABASE or "logo"
+    USER       = USER or "barkod1"
+    PASSWORD   = PASSWORD or "Barkod14*"  # This should NEVER be in production!
 COMPANY_NR = os.getenv("LOGO_COMPANY_NR", "025")    # firma
 PERIOD_NR  = os.getenv("LOGO_PERIOD_NR", "01")       # dönem (01‑12)
 
@@ -520,17 +535,18 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# Ortak bağlantı yardımcısı – DAO’nun her yerinde tek nokta
+# DEPRECATED: Use get_conn() instead
 # ---------------------------------------------------------------------------
 def get_connection(autocommit: bool = True):
     """
-    pyodbc bağlantısını CONN_STR ayarıyla üretir.
+    DEPRECATED: Bu fonksiyon get_conn() lehine kullanımdan kaldırılmıştır.
+    Geriye uyumluluk için korunmuştur.
     
     Parametreler
     ------------
     autocommit : bool
-        • True  → her sorgu otomatik commit (INSERT/UPDATE/DELETE’lerde güvenli)
-        • False → manuel transaction kontrolü (load_file gibi toplu insert’te)
+        • True  → her sorgu otomatik commit (INSERT/UPDATE/DELETE'lerde güvenli)
+        • False → manuel transaction kontrolü (load_file gibi toplu insert'te)
     
     Dönüş
     -----

@@ -528,6 +528,17 @@ class LoaderPage(QWidget):
             if current_header:
                 pkg_tot = current_header["pkgs_total"]
             
+            # ► Paket sayısı azaltıldıysa fazla kayıtları temizle
+            if pkg_no > pkg_tot:
+                # Bu paket artık geçersiz, shipment_loaded'dan sil
+                exec_sql(
+                    "DELETE FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ?",
+                    trip_id, pkg_no
+                )
+                snd_err.play()                                  # 🔊 hata
+                QMessageBox.warning(self, "Paket", f"Paket numarası geçersiz! (1-{pkg_tot} arası olmalı)\nFazla paket kaydı silindi.")
+                return
+            
             if not (1 <= pkg_no <= pkg_tot):
                 snd_err.play()                                  # 🔊 hata
                 QMessageBox.warning(self, "Paket", f"Paket numarası geçersiz! (1-{pkg_tot} arası olmalı)")

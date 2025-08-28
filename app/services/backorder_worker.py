@@ -88,13 +88,57 @@ def process_backorders() -> None:
 
     log.info("Back-order kontrolü başlıyor (%d grup)…", len(groups))
 
-    for (ord_no, item_code, wh_id), g in groups.items():
-        need = g["need"]                     # toplu eksik
+    # Batch fetch all stock quantities in one query - FIX N+1 PROBLEM
+    item_warehouse_pairs = [(item_code, wh_id) for (_, item_code, wh_id) in groups.keys()]
+    
+    # Build batch query for all items
+    stock_quantities = {}
+    if item_warehouse_pairs:
         try:
-            free = fetch_free_qty(item_code, wh_id)
-        except pyodbc.Error as exc:
-            log.error("Stok sorgu hatası %s – %s", item_code, exc)
-            continue
+            # Create placeholders for batch query
+            placeholders = ','.join(['(?, ?)'] * len(item_warehouse_pairs))
+            params = []
+            for item_code, wh_id in item_warehouse_pairs:
+                params.extend([item_code, wh_id])
+            
+            # Batch query to get all stock quantities at once
+            # Build proper query with item codes and warehouse IDs
+            with dao.get_conn() as conn:
+                # Need to join with ITEMS table to get stock code
+                query_parts = []
+                query_params = []
+                for item_code, wh_id in item_warehouse_pairs:
+                    query_parts.append("(I.CODE = ? AND S.INVENNO = ?)")
+                    query_params.extend([item_code, wh_id])
+                
+                where_clause = " OR ".join(query_parts)
+                
+                cur = conn.execute(f"""
+                    SELECT I.CODE as item_code, S.INVENNO as warehouse_id, 
+                           COALESCE(SUM(S.ONHAND), 0) as free_qty
+                    FROM LV_025_01_STINVTOT S
+                    JOIN {dao._t('ITEMS', period_dependent=False)} I ON I.LOGICALREF = S.STOCKREF
+                    WHERE {where_clause}
+                    GROUP BY I.CODE, S.INVENNO
+                """, *query_params)
+                
+                for row in cur.fetchall():
+                    stock_quantities[(row.item_code, row.warehouse_id)] = row.free_qty
+                    
+        except Exception as exc:
+            log.error("Batch stok sorgu hatası: %s", exc)
+            # Fallback to individual queries if batch fails
+            for item_code, wh_id in item_warehouse_pairs:
+                try:
+                    free = fetch_free_qty(item_code, wh_id)
+                    stock_quantities[(item_code, wh_id)] = free
+                except:
+                    stock_quantities[(item_code, wh_id)] = 0
+
+    # Process groups with fetched quantities
+    for (ord_no, item_code, wh_id), g in groups.items():
+        need = g["need"]
+        free = stock_quantities.get((item_code, wh_id), 0)
 
         if free >= need:
             # ► tüm alt kayıtları kapat

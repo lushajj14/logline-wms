@@ -47,15 +47,14 @@ def fetch_pending() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 def fetch_completed(on_date: date) -> pd.DataFrame:
     """Belirli tarihte fulfilled=1 olan kayıtları getirir"""
-    date_str = on_date.strftime("%Y-%m-%d")
-    sql = f"""
+    sql = """
     SELECT order_no, item_code, qty_missing, warehouse_id, fulfilled_at
       FROM backorders
      WHERE fulfilled = 1
-       AND CAST(fulfilled_at AS DATE) = '{date_str}'
+       AND CAST(fulfilled_at AS DATE) = ?
     """
     with dao.get_conn() as cn:
-        return pd.read_sql(sql, cn)
+        return pd.read_sql(sql, cn, params=[on_date.strftime("%Y-%m-%d")])
 
 # ---------------------------------------------------------------------------
 def generate_report(report_date: date):
