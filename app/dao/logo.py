@@ -48,14 +48,18 @@ from app.config.env_config import get_config
 config = get_config()
 
 # Get database configuration with validation
+from app.settings_manager import get_manager
+manager = get_manager()
+
+# First try settings.json, then env variables
 db_config = config.get_database_config()
-SERVER = db_config["server"]
-DATABASE = db_config["database"]
-USER = db_config["username"]
-PASSWORD = db_config["password"]
+SERVER = manager.get("db.server", db_config["server"])
+DATABASE = manager.get("db.database", db_config["database"])
+USER = manager.get("db.user", db_config["username"])
+PASSWORD = manager.get("db.password", db_config["password"])
 DRIVER = db_config["driver"]
-COMPANY_NR = db_config["company_nr"]
-PERIOD_NR = db_config["period_nr"]
+COMPANY_NR = manager.get("db.company_nr", db_config["company_nr"])
+PERIOD_NR = manager.get("db.period_nr", db_config["period_nr"])
 
 logger.debug("Seçilen ODBC sürücüsü: %s", DRIVER)
 
@@ -77,30 +81,63 @@ _connection_pool_initialized = False
 
 def _initialize_pool_if_needed():
     """Initialize connection pool on first use if enabled."""
-    global _connection_pool_initialized
+    global _connection_pool_initialized, CONN_STR, SERVER
     
     if not USE_CONNECTION_POOL or _connection_pool_initialized:
         return
     
     try:
-        from app.dao.connection_pool import initialize_global_pool
+        # Try with fallback mechanism first
+        from app.dao.connection_fallback import ConnectionFallback
         
-        # Pool configuration from environment variables
-        min_conn = int(os.getenv("DB_POOL_MIN_CONNECTIONS", "2"))
-        max_conn = int(os.getenv("DB_POOL_MAX_CONNECTIONS", "8"))
+        # Try to get a working connection
+        working_conn_str, description = ConnectionFallback.get_working_connection()
         
-        success = initialize_global_pool(
-            connection_string=CONN_STR,
-            min_connections=min_conn,
-            max_connections=max_conn,
-            connection_timeout=CONN_TIMEOUT
-        )
-        
-        if success:
-            _connection_pool_initialized = True
-            logger.info(f"Connection pool enabled (min:{min_conn}, max:{max_conn})")
+        if working_conn_str:
+            # Update global connection string if different
+            if working_conn_str != CONN_STR:
+                CONN_STR = working_conn_str
+                # Extract server from connection string
+                import re
+                server_match = re.search(r'SERVER=([^;]+)', working_conn_str)
+                if server_match:
+                    SERVER = server_match.group(1)
+                    logger.info(f"Using fallback server: {SERVER} ({description})")
+            
+            # Now initialize pool with working connection
+            from app.dao.connection_pool import initialize_global_pool
+            
+            # Pool configuration from environment variables
+            min_conn = int(os.getenv("DB_POOL_MIN_CONNECTIONS", "2"))
+            max_conn = int(os.getenv("DB_POOL_MAX_CONNECTIONS", "8"))
+            
+            success = initialize_global_pool(
+                connection_string=working_conn_str,
+                min_connections=min_conn,
+                max_connections=max_conn,
+                connection_timeout=CONN_TIMEOUT
+            )
+            
+            if success:
+                _connection_pool_initialized = True
+                logger.info(f"Connection pool enabled with {description} (min:{min_conn}, max:{max_conn})")
+            else:
+                logger.warning("Connection pool initialization failed, falling back to direct connections")
         else:
-            logger.warning("Connection pool initialization failed, falling back to direct connections")
+            logger.error("No working database connection found! Please check your network and settings.")
+            # Show error dialog to user
+            try:
+                from PyQt5.QtWidgets import QApplication, QMessageBox
+                app = QApplication.instance()
+                if app:
+                    QMessageBox.critical(None, "Bağlantı Hatası", 
+                        "Veritabanına bağlanılamadı!\n\n"
+                        "Lütfen:\n"
+                        "• VPN bağlantınızı kontrol edin\n"
+                        "• Internet bağlantınızı kontrol edin\n"
+                        "• Ayarlar > Veritabanı'ndan doğru profili seçin")
+            except:
+                pass
             
     except Exception as e:
         logger.warning(f"Failed to initialize connection pool: {e}, using direct connections")
@@ -230,7 +267,7 @@ def fetch_draft_orders(*, limit: int = 100) -> List[Dict[str, Any]]:
     JOIN {_t('CLCARD', period_dependent=False)} C ON C.LOGICALREF = F.CLIENTREF
     WHERE F.STATUS = 1      -- öneri
       AND F.CANCELLED = 0
-    ORDER BY F.DATE_, F.FICHENO;"""
+    ORDER BY F.LOGICALREF DESC;"""
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(sql, limit)
@@ -256,7 +293,7 @@ def fetch_picking_orders(limit: int = 100) -> List[Dict[str, Any]]:
           ON C.LOGICALREF = F.CLIENTREF
     WHERE F.STATUS = 2           -- picking
       AND F.CANCELLED = 0
-    ORDER BY F.DATE_, F.FICHENO;
+    ORDER BY F.LOGICALREF DESC;
     """
     with get_conn() as cn:
         cur = cn.cursor()

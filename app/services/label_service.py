@@ -74,6 +74,29 @@ except Exception:
     FONT_NAME = "Helvetica"
 
 # ---------------------------------------------------------------------------
+def get_current_user_first_name() -> str:
+    """Get the first name of the current user from settings."""
+    try:
+        from app.settings_manager import get_manager
+        manager = get_manager()
+        username = manager.get("login.last_username", "")
+        
+        # Get user's full name from database
+        with dao.get_conn() as cn:
+            cursor = cn.cursor()
+            cursor.execute("SELECT name FROM users WHERE username = ?", username)
+            row = cursor.fetchone()
+            if row and row[0]:
+                # Extract first name (MUSTAFA KUYAR -> MUSTAFA)
+                full_name = str(row[0]).strip()
+                first_name = full_name.split()[0] if full_name else username
+                return first_name.upper()
+        return username.upper()
+    except Exception as e:
+        logging.debug(f"Could not get user first name: {e}")
+        return ""
+
+# ---------------------------------------------------------------------------
 def parse_int(text: str, default:int=1) -> int:
     m = re.search(r"(\d+)", text or "")
     return int(m.group(1)) if m else default
@@ -171,6 +194,16 @@ def draw_page(c: canvas.Canvas, p: Dict[str, str]):
     if p.get("footer"):
         c.setFont(FONT_NAME, 8)
         c.drawCentredString(PAGE_SIZE[0]/2, 5*mm, p["footer"])
+    
+    # User name in bottom right
+    if p.get("user_name"):
+        c.setFont(FONT_NAME, 7)
+        c.drawRightString(PAGE_SIZE[0]-6*mm, 3*mm, p["user_name"])
+    
+    # Print date/time in bottom left
+    if p.get("print_datetime"):
+        c.setFont(FONT_NAME, 6)
+        c.drawString(6*mm, 3*mm, p["print_datetime"])
 
     c.showPage()
 
@@ -200,6 +233,12 @@ def make_labels(order_no: str, *, force: bool = False, footer: str = ""):
     # — adres satırlarını kır —
     adres_raw   = (hdr.get("adres", "").upper()).split()
     adres_lines = [" ".join(adres_raw[i:i + 6]) for i in range(0, len(adres_raw), 6)][:2]
+    
+    # Get current user's first name
+    user_name = get_current_user_first_name()
+    
+    # Get current datetime for print timestamp
+    print_datetime = dt.datetime.now().strftime("%d.%m.%Y %H:%M")
 
     for i in range(1, pkg_tot + 1):
         barkod = f"{barkod_root}-K{i}"             # ← 🔸 YENİ: paket no ekle
@@ -217,11 +256,13 @@ def make_labels(order_no: str, *, force: bool = False, footer: str = ""):
             "transfer":   hdr.get("genexp1", "").strip(";"),
             "inv_line":   "FATURA BU PAKETİN İÇİNDEDİR" if i == 1 else "",
             "footer":     footer,
+            "user_name":  user_name,
+            "print_datetime": print_datetime,
         }
         draw_page(c, payload)
 
     c.save()
-    logging.info("PDF etiketi oluşturuldu → %s", pdf_path)
+    logging.info("PDF etiketi oluşturuldu: %s", pdf_path)
 
 
 # ---------------------------------------------------------------------------

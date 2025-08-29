@@ -295,7 +295,7 @@ _pool_lock = threading.Lock()
 
 
 def initialize_global_pool(
-    connection_string: str,
+    connection_string: str = None,
     min_connections: int = None,
     max_connections: int = None,
     **kwargs
@@ -304,7 +304,7 @@ def initialize_global_pool(
     Initialize the global connection pool.
     
     Args:
-        connection_string: Database connection string
+        connection_string: Database connection string (optional, will build from settings)
         min_connections: Minimum connections (default from env or 2)
         max_connections: Maximum connections (default from env or 10)
         **kwargs: Additional arguments for ConnectionPool
@@ -313,6 +313,29 @@ def initialize_global_pool(
         bool: True if initialization successful
     """
     global _global_pool
+    
+    # Build connection string if not provided
+    if connection_string is None:
+        from app.settings_manager import get_manager
+        manager = get_manager()
+        
+        # Get from settings first, then env, then defaults
+        SERVER = manager.get("db.server", os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433"))
+        DATABASE = manager.get("db.database", os.getenv("LOGO_SQL_DB", "logo"))
+        USER = manager.get("db.user", os.getenv("LOGO_SQL_USER", "barkod1"))
+        PASSWORD = manager.get("db.password", os.getenv("LOGO_SQL_PASSWORD", "Barkod14*"))
+        
+        # Get best available driver
+        drivers = [d for d in pyodbc.drivers() if d.startswith("ODBC Driver") and "SQL Server" in d]
+        drivers.sort(key=lambda s: int("".join(filter(str.isdigit, s))) or 0)
+        DRIVER = os.getenv("LOGO_SQL_DRIVER") or (drivers[-1] if drivers else "SQL Server")
+        
+        connection_string = (
+            f"DRIVER={{{DRIVER}}};SERVER={SERVER};DATABASE={DATABASE};"
+            f"UID={USER};PWD={PASSWORD};TrustServerCertificate=yes;"
+        )
+        
+        logger.info(f"Using database connection: Server={SERVER}, Database={DATABASE}, User={USER}")
     
     # Get configuration from environment variables
     if min_connections is None:
@@ -369,13 +392,17 @@ def get_pooled_connection(*, autocommit: bool = False):
     # Direct connection without circular import
     conn = None
     try:
-        # Get connection string from environment or use defaults
+        # Get connection string from settings first, then environment, then defaults
         import pyodbc
+        from app.settings_manager import get_manager
         
-        SERVER = os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433")
-        DATABASE = os.getenv("LOGO_SQL_DB", "logo")
-        USER = os.getenv("LOGO_SQL_USER", "barkod1")
-        PASSWORD = os.getenv("LOGO_SQL_PASSWORD", "Barkod14*")
+        manager = get_manager()
+        
+        # Try settings.json first, then env, then defaults
+        SERVER = manager.get("db.server", os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433"))
+        DATABASE = manager.get("db.database", os.getenv("LOGO_SQL_DB", "logo"))
+        USER = manager.get("db.user", os.getenv("LOGO_SQL_USER", "barkod1"))
+        PASSWORD = manager.get("db.password", os.getenv("LOGO_SQL_PASSWORD", "Barkod14*"))
         CONN_TIMEOUT = int(os.getenv("DB_CONN_TIMEOUT", "10"))
         
         # Get best available driver
@@ -420,3 +447,46 @@ def close_global_pool():
             _global_pool.close_all()
             _global_pool = None
             logger.info("Global connection pool closed")
+
+
+def reconnect_global_pool() -> bool:
+    """
+    Reconnect the global connection pool with new settings.
+    This allows live updating of database connections.
+    """
+    global _global_pool
+    
+    logger.info("Reconnecting global connection pool with new settings...")
+    
+    # Close existing pool
+    close_global_pool()
+    
+    # Re-initialize with new settings
+    from app.settings_manager import get_manager
+    manager = get_manager()
+    
+    # Get new settings
+    SERVER = manager.get("db.server", os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433"))
+    DATABASE = manager.get("db.database", os.getenv("LOGO_SQL_DB", "logo"))
+    USER = manager.get("db.user", os.getenv("LOGO_SQL_USER", "barkod1"))
+    PASSWORD = manager.get("db.password", os.getenv("LOGO_SQL_PASSWORD", "Barkod14*"))
+    
+    # Get best available driver
+    drivers = [d for d in pyodbc.drivers() if d.startswith("ODBC Driver") and "SQL Server" in d]
+    drivers.sort(key=lambda s: int("".join(filter(str.isdigit, s))) or 0)
+    DRIVER = os.getenv("LOGO_SQL_DRIVER") or (drivers[-1] if drivers else "SQL Server")
+    
+    connection_string = (
+        f"DRIVER={{{DRIVER}}};SERVER={SERVER};DATABASE={DATABASE};"
+        f"UID={USER};PWD={PASSWORD};TrustServerCertificate=yes;"
+    )
+    
+    # Initialize new pool
+    success = initialize_global_pool(connection_string)
+    
+    if success:
+        logger.info(f"Successfully reconnected to: Server={SERVER}, Database={DATABASE}")
+    else:
+        logger.error("Failed to reconnect connection pool")
+    
+    return success

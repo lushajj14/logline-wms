@@ -212,25 +212,17 @@ class UserDAO:
             logger.error(f"Error getting all users: {e}")
             return []
     
-    def create_user(self, username: str, email: str, password: str, 
-                   full_name: str, role: str = 'operator') -> Optional[int]:
+    def create_user(self, user_data: Dict) -> Optional[int]:
         """
         Yeni kullanıcı oluştur.
         
         Args:
-            username: Kullanıcı adı
-            email: E-posta
-            password: Düz metin şifre
-            full_name: Ad soyad
-            role: Rol (admin, supervisor, operator, viewer)
+            user_data: Kullanıcı verileri dict
             
         Returns:
             Başarılıysa yeni kullanıcı ID'si
         """
         try:
-            # Şifreyi hash'le
-            password_hash = self._hash_password(password)
-            
             # Kullanıcıyı ekle
             result = fetch_one(
                 """
@@ -239,20 +231,28 @@ class UserDAO:
                     EMAIL, 
                     SIFRE_HASH, 
                     AD_SOYAD, 
-                    ROL
+                    ROL,
+                    AKTIF
                 )
                 OUTPUT INSERTED.LOGICALREF
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                [username, email, password_hash, full_name, role]
+                [
+                    user_data['username'],
+                    user_data['email'],
+                    user_data.get('password_hash', ''),
+                    user_data['full_name'],
+                    user_data.get('role', 'operator'),
+                    user_data.get('is_active', True)
+                ]
             )
             
             if result:
                 user_id = result['logicalref']
-                logger.info(f"User created: {username} (ID: {user_id})")
+                logger.info(f"User created: {user_data['username']} (ID: {user_id})")
                 
                 # Aktiviteyi logla
-                self.log_activity(user_id, 'user_created', 'users', f'User {username} created')
+                self.log_activity(user_id, 'user_created', 'users', f'User {user_data['username']} created')
                 
                 return user_id
             
@@ -262,19 +262,20 @@ class UserDAO:
             logger.error(f"Error creating user: {e}")
             return None
     
-    def update_user(self, user_id: int, **kwargs) -> bool:
+    def update_user(self, user_id: int, user_data: Dict) -> bool:
         """
         Kullanıcı bilgilerini güncelle.
         
         Args:
             user_id: Kullanıcı ID
-            **kwargs: Güncellenecek alanlar
+            user_data: Güncellenecek veriler
             
         Returns:
             Başarılıysa True
         """
         try:
             allowed_fields = {
+                'username': 'KULLANICI_ADI',
                 'email': 'EMAIL',
                 'full_name': 'AD_SOYAD',
                 'role': 'ROL',
@@ -284,7 +285,7 @@ class UserDAO:
             updates = []
             values = []
             
-            for field, value in kwargs.items():
+            for field, value in user_data.items():
                 if field in allowed_fields:
                     updates.append(f"{allowed_fields[field]} = ?")
                     values.append(value)
@@ -304,7 +305,7 @@ class UserDAO:
             rows = execute_query(query, values)
             
             if rows > 0:
-                self.log_activity(user_id, 'user_updated', 'users', f'User updated: {list(kwargs.keys())}')
+                self.log_activity(user_id, 'user_updated', 'users', f'User updated: {list(user_data.keys())}')
                 return True
                 
             return False
@@ -466,3 +467,62 @@ class UserDAO:
                 'weekly_active_users': 0,
                 'locked_users': 0
             }
+    
+    def update_password(self, user_id: int, password_hash: str) -> bool:
+        """
+        Kullanıcı şifresini güncelle.
+        
+        Args:
+            user_id: Kullanıcı ID
+            password_hash: Hash'lenmiş şifre
+            
+        Returns:
+            Başarılı ise True
+        """
+        try:
+            execute_query(
+                """
+                UPDATE WMS_KULLANICILAR 
+                SET SIFRE_HASH = ?,
+                    GUNCELLEME_TARIHI = GETDATE()
+                WHERE LOGICALREF = ?
+                """,
+                [password_hash, user_id]
+            )
+            
+            logger.info(f"Password updated for user ID: {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating password: {e}")
+            return False
+    
+    def delete_user(self, user_id: int) -> bool:
+        """
+        Kullanıcıyı sil.
+        
+        Args:
+            user_id: Kullanıcı ID
+            
+        Returns:
+            Başarılı ise True
+        """
+        try:
+            # Soft delete - sadece aktif durumunu kapat
+            execute_query(
+                """
+                UPDATE WMS_KULLANICILAR 
+                SET AKTIF = 0,
+                    SILINME_TARIHI = GETDATE(),
+                    GUNCELLEME_TARIHI = GETDATE()
+                WHERE LOGICALREF = ?
+                """,
+                [user_id]
+            )
+            
+            logger.info(f"User deleted (soft): ID {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting user: {e}")
+            return False

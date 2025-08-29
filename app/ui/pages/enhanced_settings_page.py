@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 import json
+import logging
 
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (
@@ -24,6 +25,8 @@ from PyQt5.QtGui import QIcon, QColor
 
 import app.settings as st
 from app.settings_manager import get_manager
+
+logger = logging.getLogger(__name__)
 
 
 class EnhancedSettingsPage(QWidget):
@@ -156,31 +159,90 @@ class EnhancedSettingsPage(QWidget):
         
         layout = QVBoxLayout(tab)
         
-        # Connection info (read-only from env)
-        info_group = QGroupBox("Bağlantı Bilgileri (Environment)")
+        # Connection info (editable)
+        info_group = QGroupBox("Bağlantı Bilgileri")
         info_layout = QGridLayout(info_group)
         
-        # Get values from environment
+        # Quick profile selector
+        profile_layout = QHBoxLayout()
+        profile_layout.addWidget(QLabel("Hızlı Profil:"))
+        
+        self.btn_vpn_profile = QPushButton("🏢 VPN/Lokal")
+        self.btn_vpn_profile.setToolTip("192.168.5.100,1433")
+        self.btn_vpn_profile.clicked.connect(lambda: self._apply_profile("192.168.5.100,1433", "logo", "barkod1", "Barkod14*"))
+        profile_layout.addWidget(self.btn_vpn_profile)
+        
+        self.btn_internet_profile = QPushButton("🌐 Internet")
+        self.btn_internet_profile.setToolTip("78.135.108.160,1433")
+        self.btn_internet_profile.clicked.connect(lambda: self._apply_profile("78.135.108.160,1433", "logo", "barkod1", "Barkod14*"))
+        profile_layout.addWidget(self.btn_internet_profile)
+        
+        self.btn_local_profile = QPushButton("💻 Localhost")
+        self.btn_local_profile.setToolTip("localhost,1433")
+        self.btn_local_profile.clicked.connect(lambda: self._apply_profile("localhost,1433", "logo", "barkod1", "Barkod14*"))
+        profile_layout.addWidget(self.btn_local_profile)
+        
+        profile_layout.addStretch()
+        info_layout.addLayout(profile_layout, 0, 0, 1, 2)
+        
+        # Get values from environment or settings
         import os
-        info_layout.addWidget(QLabel("Sunucu:"), 0, 0)
-        self.lbl_server = QLabel(os.getenv("LOGO_SQL_SERVER", "Not configured"))
-        self.lbl_server.setStyleSheet("color: blue;")
-        info_layout.addWidget(self.lbl_server, 0, 1)
         
-        info_layout.addWidget(QLabel("Veritabanı:"), 1, 0)
-        self.lbl_database = QLabel(os.getenv("LOGO_SQL_DB", "Not configured"))
-        self.lbl_database.setStyleSheet("color: blue;")
-        info_layout.addWidget(self.lbl_database, 1, 1)
+        info_layout.addWidget(QLabel("Sunucu:"), 1, 0)
+        self.txt_server = QLineEdit()
+        self.txt_server.setText(self.manager.get("db.server", os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433")))
+        self.txt_server.setPlaceholderText("Örn: 192.168.5.100,1433")
+        info_layout.addWidget(self.txt_server, 1, 1)
         
-        info_layout.addWidget(QLabel("Kullanıcı:"), 2, 0)
-        self.lbl_user = QLabel(os.getenv("LOGO_SQL_USER", "Not configured"))
-        self.lbl_user.setStyleSheet("color: blue;")
-        info_layout.addWidget(self.lbl_user, 2, 1)
+        info_layout.addWidget(QLabel("Veritabanı:"), 2, 0)
+        self.txt_database = QLineEdit()
+        self.txt_database.setText(self.manager.get("db.database", os.getenv("LOGO_SQL_DB", "logo")))
+        self.txt_database.setPlaceholderText("Örn: logo")
+        info_layout.addWidget(self.txt_database, 2, 1)
+        
+        info_layout.addWidget(QLabel("Kullanıcı:"), 3, 0)
+        self.txt_user = QLineEdit()
+        self.txt_user.setText(self.manager.get("db.user", os.getenv("LOGO_SQL_USER", "barkod1")))
+        self.txt_user.setPlaceholderText("Örn: barkod1")
+        info_layout.addWidget(self.txt_user, 3, 1)
+        
+        info_layout.addWidget(QLabel("Şifre:"), 4, 0)
+        self.txt_password = QLineEdit()
+        self.txt_password.setEchoMode(QLineEdit.Password)
+        self.txt_password.setText(self.manager.get("db.password", os.getenv("LOGO_SQL_PASSWORD", "Barkod14*")))
+        self.txt_password.setPlaceholderText("Veritabanı şifresi")
+        info_layout.addWidget(self.txt_password, 4, 1)
+        
+        # Show/Hide password checkbox
+        self.chk_show_password = QCheckBox("Şifreyi göster")
+        self.chk_show_password.toggled.connect(lambda checked: 
+            self.txt_password.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password))
+        info_layout.addWidget(self.chk_show_password, 5, 1)
+        
+        # Company and Period numbers
+        info_layout.addWidget(QLabel("Firma No:"), 6, 0)
+        self.txt_company_nr = QLineEdit()
+        self.txt_company_nr.setText(self.manager.get("db.company_nr", os.getenv("LOGO_COMPANY_NR", "025")))
+        self.txt_company_nr.setPlaceholderText("Firma numarası (örn: 025)")
+        self.txt_company_nr.setMaxLength(3)
+        info_layout.addWidget(self.txt_company_nr, 6, 1)
+        
+        info_layout.addWidget(QLabel("Dönem No:"), 7, 0)
+        self.txt_period_nr = QLineEdit()
+        self.txt_period_nr.setText(self.manager.get("db.period_nr", os.getenv("LOGO_PERIOD_NR", "01")))
+        self.txt_period_nr.setPlaceholderText("Dönem numarası (örn: 01)")
+        self.txt_period_nr.setMaxLength(2)
+        info_layout.addWidget(self.txt_period_nr, 7, 1)
         
         # Test connection button
         self.btn_test_db = QPushButton("Bağlantıyı Test Et")
         self.btn_test_db.clicked.connect(self.test_database_connection)
-        info_layout.addWidget(self.btn_test_db, 3, 0, 1, 2)
+        info_layout.addWidget(self.btn_test_db, 8, 0, 1, 2)
+        
+        # Info label for restart requirement
+        self.lbl_db_info = QLabel("ℹ️ DB ayarları değişikliği kaydedildiğinde canlı olarak uygulanır")
+        self.lbl_db_info.setStyleSheet("color: green; font-weight: bold;")
+        info_layout.addWidget(self.lbl_db_info, 9, 0, 1, 2)
         
         layout.addWidget(info_group)
         
@@ -545,7 +607,12 @@ class EnhancedSettingsPage(QWidget):
     def save_settings(self) -> None:
         """Save UI values to settings manager."""
         # Get manager and disable auto-save temporarily
+        from app.settings_manager import get_manager
         manager = get_manager()
+        
+        # Validate database settings before saving
+        if not self._validate_db_settings():
+            return
         
         # Appearance (auto_save=False for batch update)
         manager.set("ui.theme", self.cmb_theme.currentText(), auto_save=False)
@@ -557,6 +624,12 @@ class EnhancedSettingsPage(QWidget):
         manager.set("ui.auto_focus", self.chk_focus.isChecked(), auto_save=False)
         
         # Database
+        manager.set("db.server", self.txt_server.text(), auto_save=False)
+        manager.set("db.database", self.txt_database.text(), auto_save=False)
+        manager.set("db.user", self.txt_user.text(), auto_save=False)
+        manager.set("db.password", self.txt_password.text(), auto_save=False)
+        manager.set("db.company_nr", self.txt_company_nr.text(), auto_save=False)
+        manager.set("db.period_nr", self.txt_period_nr.text(), auto_save=False)
         manager.set("db.retry", self.spin_retry.value(), auto_save=False)
         manager.set("db.heartbeat", self.spin_heartbeat.value(), auto_save=False)
         manager.set("db.pool_enabled", self.chk_pool.isChecked(), auto_save=False)
@@ -612,22 +685,316 @@ class EnhancedSettingsPage(QWidget):
         # Save everything to disk once
         manager.save()
         
+        # Check if database settings changed
+        import os
+        
+        # Get previous values
+        prev_manager = get_manager()
+        db_changed = (
+            self.txt_server.text() != prev_manager.get("db.server", os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433")) or
+            self.txt_database.text() != prev_manager.get("db.database", os.getenv("LOGO_SQL_DB", "logo")) or
+            self.txt_user.text() != prev_manager.get("db.user", os.getenv("LOGO_SQL_USER", "barkod1")) or
+            self.txt_password.text() != prev_manager.get("db.password", os.getenv("LOGO_SQL_PASSWORD", "Barkod14*"))
+        )
+        
         # Emit signal
         self.settings_saved.emit()
         
-        QMessageBox.information(self, "Ayarlar", "Ayarlar başarıyla kaydedildi!")
+        if db_changed:
+            # Ask user what to do
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Veritabanı Ayarları Değişti")
+            msg.setText("Veritabanı bağlantı ayarları değişti.\nNe yapmak istersiniz?")
+            
+            btn_reconnect = msg.addButton("Canlı Bağlan (Tavsiye Edilen)", QMessageBox.AcceptRole)
+            btn_restart = msg.addButton("Uygulamayı Yeniden Başlat", QMessageBox.AcceptRole)
+            btn_later = msg.addButton("İptal", QMessageBox.RejectRole)
+            
+            msg.exec_()
+            
+            if msg.clickedButton() == btn_reconnect:
+                self.reconnect_database()
+            elif msg.clickedButton() == btn_restart:
+                self.restart_application()
+            # If btn_later, do nothing
+        else:
+            # Apply other settings live
+            self.apply_live_settings()
+            QMessageBox.information(self, "Ayarlar", "Ayarlar başarıyla kaydedildi ve uygulandı!")
+    
+    def _validate_db_settings(self) -> bool:
+        """Validate database settings before saving."""
+        # Known working configurations
+        KNOWN_SERVERS = [
+            ("192.168.5.100", 1433),  # Ana sunucu (Local/VPN)
+            ("78.135.108.160", 1433), # Yedek sunucu (Public/Internet)
+            ("localhost", 1433),      # Local test
+            ("127.0.0.1", 1433),      # Local test
+        ]
+        
+        # Parse server and port
+        server_text = self.txt_server.text().strip()
+        if ',' in server_text:
+            server_ip, port_str = server_text.split(',')
+            try:
+                port = int(port_str)
+            except ValueError:
+                QMessageBox.critical(self, "Hata", "Port numarası geçersiz!")
+                return False
+        else:
+            server_ip = server_text
+            port = 1433  # Default SQL Server port
+        
+        # Check if configuration is known
+        is_known = any(s[0] == server_ip and s[1] == port for s in KNOWN_SERVERS)
+        
+        if not is_known:
+            reply = QMessageBox.warning(
+                self,
+                "⚠️ Bilinmeyen Sunucu Ayarı",
+                f"Dikkat! Bu sunucu/port kombinasyonu test edilmemiş:\n\n"
+                f"Sunucu: {server_ip}\n"
+                f"Port: {port}\n\n"
+                f"Bilinen çalışan ayarlar:\n"
+                f"• 192.168.5.100:1433 (Ana sunucu - VPN)\n"
+                f"• 78.135.108.160:1433 (Yedek sunucu - Internet)\n\n"
+                f"Yine de devam etmek istiyor musunuz?\n"
+                f"(Program çökerse settings.json'u manuel düzeltin)",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.No:
+                return False
+            
+            # Extra confirmation for risky changes
+            if port != 1433:
+                reply2 = QMessageBox.critical(
+                    self,
+                    "🔴 Yüksek Risk!",
+                    f"Port {port} standart SQL Server portu (1433) değil!\n\n"
+                    f"Bu ayar büyük olasılıkla hatalı ve programı çökertebilir.\n\n"
+                    f"EMİN MİSİNİZ?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                if reply2 == QMessageBox.No:
+                    # Suggest correction
+                    self.txt_server.setText(f"{server_ip},1433")
+                    QMessageBox.information(self, "Düzeltildi", 
+                        f"Port numarası 1433 olarak düzeltildi.\n"
+                        f"Tekrar kaydet butonuna basın.")
+                    return False
+        
+        return True
     
     def test_database_connection(self) -> None:
-        """Test database connection."""
+        """Test database connection with current settings."""
         try:
-            from app.dao.logo import fetch_one
-            result = fetch_one("SELECT 1 as test")
+            import pyodbc
+            
+            # Validate first
+            if not self._validate_db_settings():
+                return
+            
+            # Use current form values for testing
+            server = self.txt_server.text()
+            database = self.txt_database.text()
+            user = self.txt_user.text()
+            password = self.txt_password.text()
+            
+            # Test connection string
+            drivers = [d for d in pyodbc.drivers() if d.startswith("ODBC Driver") and "SQL Server" in d]
+            drivers.sort(key=lambda s: int("".join(filter(str.isdigit, s))) or 0)
+            driver = drivers[-1] if drivers else "SQL Server"
+            
+            conn_str = (
+                f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
+                f"UID={user};PWD={password};TrustServerCertificate=yes;"
+            )
+            
+            # Try to connect
+            with pyodbc.connect(conn_str, timeout=5) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1 as test")
+                result = cursor.fetchone()
+                
             if result:
-                QMessageBox.information(self, "Bağlantı Testi", "Veritabanı bağlantısı başarılı!")
+                QMessageBox.information(self, "Bağlantı Testi", 
+                    f"Bağlantı başarılı!\n\nSunucu: {server}\nVeritabanı: {database}\nKullanıcı: {user}")
             else:
                 QMessageBox.warning(self, "Bağlantı Testi", "Bağlantı kuruldu ama test sorgusu başarısız!")
         except Exception as e:
             QMessageBox.critical(self, "Bağlantı Hatası", f"Veritabanına bağlanılamadı!\n\n{str(e)}")
+    
+    def reconnect_database(self) -> None:
+        """Reconnect to database with new settings without restarting."""
+        from PyQt5.QtCore import QTimer
+        from app.dao.connection_pool import reconnect_global_pool
+        
+        # Show progress dialog
+        progress = QMessageBox(self)
+        progress.setWindowTitle("Bağlantı Yenileniyor")
+        progress.setText("Veritabanı bağlantısı yenileniyor...")
+        progress.setStandardButtons(QMessageBox.NoButton)
+        progress.show()
+        
+        # Process events to show the dialog
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+        
+        try:
+            # Reconnect the pool
+            success = reconnect_global_pool()
+            
+            if success:
+                progress.close()
+                QMessageBox.information(self, "Başarılı", 
+                    "Veritabanı bağlantısı başarıyla yenilendi!\n\n"
+                    f"Sunucu: {self.txt_server.text()}\n"
+                    f"Veritabanı: {self.txt_database.text()}\n"
+                    f"Kullanıcı: {self.txt_user.text()}")
+            else:
+                progress.close()
+                reply = QMessageBox.critical(self, "Bağlantı Hatası", 
+                    "Yeni ayarlarla bağlanılamadı!\n\n"
+                    "Eski ayarlara geri dönmek ister misiniz?",
+                    QMessageBox.Yes | QMessageBox.No)
+                
+                if reply == QMessageBox.Yes:
+                    # Revert to old settings
+                    self.load_settings()
+                    reconnect_global_pool()
+                    
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Hata", f"Bağlantı yenilenirken hata oluştu:\n\n{str(e)}")
+    
+    def restart_application(self) -> None:
+        """Restart the application to apply database changes."""
+        import sys
+        import subprocess
+        from PyQt5.QtWidgets import QApplication
+        
+        # Save .env file with new database settings (optional)
+        # self.save_db_settings_to_env()
+        
+        # Get current executable path
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            executable = sys.executable
+        else:
+            # Running as script
+            executable = sys.executable
+            args = [executable, "main.py"]
+            subprocess.Popen(args)
+            QApplication.quit()
+            return
+        
+        # Restart the executable
+        subprocess.Popen([executable])
+        QApplication.quit()
+    
+    def save_db_settings_to_env(self) -> None:
+        """Save database settings to .env file."""
+        import os
+        from pathlib import Path
+        
+        env_file = Path(os.getcwd()) / ".env"
+        
+        # Read existing .env content
+        lines = []
+        if env_file.exists():
+            with open(env_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        
+        # Update database settings
+        db_settings = {
+            "LOGO_SQL_SERVER": self.txt_server.text(),
+            "LOGO_SQL_DB": self.txt_database.text(),
+            "LOGO_SQL_USER": self.txt_user.text(),
+            "LOGO_SQL_PASSWORD": self.txt_password.text()
+        }
+        
+        # Update or add settings
+        for key, value in db_settings.items():
+            found = False
+            for i, line in enumerate(lines):
+                if line.startswith(f"{key}="):
+                    lines[i] = f"{key}={value}\n"
+                    found = True
+                    break
+            
+            if not found:
+                # Add at the end of database section
+                for i, line in enumerate(lines):
+                    if "Database Configuration" in line:
+                        # Find the end of database section
+                        j = i + 1
+                        while j < len(lines) and not lines[j].startswith("#") and lines[j].strip():
+                            j += 1
+                        lines.insert(j, f"{key}={value}\n")
+                        break
+        
+        # Write back to .env file
+        with open(env_file, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+        
+        logger.info(f"Database settings saved to {env_file}")
+    
+    def apply_live_settings(self) -> None:
+        """Apply non-database settings immediately without restart."""
+        try:
+            # Apply UI settings
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            
+            # Apply sound settings
+            from app.utils.sound_manager import SoundManager
+            if hasattr(self, 'sound_manager'):
+                self.sound_manager = SoundManager.get_instance()
+                self.sound_manager.set_enabled(self.chk_sounds.isChecked())
+                self.sound_manager.set_volume(self.slider_volume.value() / 100.0)
+            
+            # Apply theme if changed
+            theme = self.cmb_theme.currentText()
+            if theme != self.manager.get("ui.theme"):
+                # Theme change logic here if needed
+                pass
+            
+            # Apply font size
+            font_size = self.spin_font.value()
+            if app:
+                font = app.font()
+                font.setPointSize(font_size)
+                app.setFont(font)
+            
+            logger.info("Live settings applied successfully")
+            
+        except Exception as e:
+            logger.error(f"Error applying live settings: {e}")
+    
+    def _apply_profile(self, server: str, database: str, user: str, password: str):
+        """Apply a quick connection profile."""
+        self.txt_server.setText(server)
+        self.txt_database.setText(database)
+        self.txt_user.setText(user)
+        self.txt_password.setText(password)
+        
+        # Show which profile is active
+        if "192.168" in server:
+            profile_name = "VPN/Lokal"
+        elif "78.135" in server:
+            profile_name = "Internet"
+        else:
+            profile_name = "Localhost"
+        
+        QMessageBox.information(self, "Profil Yüklendi", 
+            f"{profile_name} profili yüklendi.\n\n"
+            f"Sunucu: {server}\n\n"
+            f"'Bağlantıyı Test Et' ile kontrol edebilir,\n"
+            f"'Kaydet' ile uygulayabilirsiniz.")
     
     def clear_cache(self) -> None:
         """Clear application cache."""

@@ -37,7 +37,12 @@
       "Bash(xcopy:*)",
       "Bash(node:*)",
       "Bash(npx serve:*)",
-      "Bash(npx:*)"
+      "Bash(npx:*)",
+      "Read(C:\\Users\\User\\Desktop/**)",
+      "Bash(cat:*)",
+      "Read(C:\\Users\\User\\Documents\\WMS\\labels/**)",
+      "Bash(start C:UsersUserDocumentsWMSlabelsLABEL_20250829_162300_SO2025-000202.pdf)",
+      "Read(C:\\Users\\User\\Documents\\WMS\\picklists/**)"
     ],
     "deny": [],
     "ask": []

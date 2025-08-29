@@ -140,7 +140,7 @@ def fetch_draft_orders_paginated(
         F.FICHENO    AS order_no,
         F.DATE_      AS order_date,
         C.CODE       AS customer_code,
-        C.TITLE      AS customer_name,
+        C.DEFINITION_ AS customer_name,
         F.NETTOTAL   AS net_total,
         F.GROSSTOTAL AS gross_total,
         F.GENEXP1    AS notes
@@ -152,7 +152,7 @@ def fetch_draft_orders_paginated(
     # Add search filter if provided
     params = []
     if search:
-        base_sql += " AND (F.FICHENO LIKE ? OR C.TITLE LIKE ?)"
+        base_sql += " AND (F.FICHENO LIKE ? OR C.DEFINITION_ LIKE ?)"
         search_term = f"%{search}%"
         params.extend([search_term, search_term])
     
@@ -165,10 +165,10 @@ def fetch_draft_orders_paginated(
     """
     
     if search:
-        count_sql += " AND (F.FICHENO LIKE ? OR C.TITLE LIKE ?)"
+        count_sql += " AND (F.FICHENO LIKE ? OR C.DEFINITION_ LIKE ?)"
     
-    # Order by
-    order_by = "ORDER BY F.DATE_ DESC, F.FICHENO DESC"
+    # Order by - use LOGICALREF to ensure newest first
+    order_by = "ORDER BY F.LOGICALREF DESC"
     
     return fetch_paginated(
         base_sql=base_sql,
@@ -203,7 +203,7 @@ def fetch_picking_orders_paginated(
         F.FICHENO     AS order_no,
         F.DATE_       AS order_date,
         C.CODE        AS customer_code,
-        C.TITLE       AS customer_name,
+        C.DEFINITION_ AS customer_name,
         F.NETTOTAL    AS net_total,
         F.SOURCEINDEX AS warehouse_id,
         F.GENEXP1     AS notes
@@ -215,7 +215,7 @@ def fetch_picking_orders_paginated(
     # Add search filter
     params = []
     if search:
-        base_sql += " AND (F.FICHENO LIKE ? OR C.TITLE LIKE ?)"
+        base_sql += " AND (F.FICHENO LIKE ? OR C.DEFINITION_ LIKE ?)"
         search_term = f"%{search}%"
         params.extend([search_term, search_term])
     
@@ -228,10 +228,10 @@ def fetch_picking_orders_paginated(
     """
     
     if search:
-        count_sql += " AND (F.FICHENO LIKE ? OR C.TITLE LIKE ?)"
+        count_sql += " AND (F.FICHENO LIKE ? OR C.DEFINITION_ LIKE ?)"
     
-    # Order by
-    order_by = "ORDER BY F.DATE_ DESC, F.FICHENO DESC"
+    # Order by - use LOGICALREF to ensure newest first
+    order_by = "ORDER BY F.LOGICALREF DESC"
     
     return fetch_paginated(
         base_sql=base_sql,

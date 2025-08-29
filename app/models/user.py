@@ -194,6 +194,10 @@ class AuthManager:
         
         return None
     
+    def get_current_user(self) -> Optional[User]:
+        """Get currently logged in user."""
+        return self._current_user
+    
     def logout(self):
         """Logout current user."""
         if self._current_user:

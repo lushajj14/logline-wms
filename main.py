@@ -12,6 +12,11 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from app.ui.main_window import MainWindow
 import app.settings as settings            # ‹ settings.py içindeki fonksiyonlara erişim
 
+# Validate database configuration before environment
+from startup_validator import validate_startup_config
+if not validate_startup_config():
+    sys.exit("Database configuration validation failed.")
+
 # Validate environment configuration at startup
 from app.config.validate_env import run_validation
 if not run_validation(exit_on_error=True):

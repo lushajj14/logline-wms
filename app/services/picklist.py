@@ -137,7 +137,7 @@ def create_picklist_pdf(order: dict, lines: List[dict]) -> Path:
 def process_order(order: dict):
     lines = fetch_order_lines(order["order_id"])
     pdf_path = create_picklist_pdf(order, lines)
-    logger.info("PDF oluşturuldu ➜ %s", pdf_path.relative_to(BASE_DIR))
+    logger.info("PDF oluşturuldu: %s", pdf_path.relative_to(BASE_DIR))
     update_order_status(order["order_id"], 2)  # picking
     logger.info("Sipariş %s STATUS=2 yapıldı", order["order_no"])
 

@@ -29,7 +29,7 @@ from PyQt5.QtCore import QSize, Qt
 # ---- Sidebar tanımı ---------------------------------------------
 _PAGES = [
     ("Dashboard",     "applications-office",   "dashboard_page",   "DashboardPage"),
-    ("Pick-List",     "document-print",    "picklist_page",    "PicklistPage"),
+    ("Pick-List",     "document-print",    "enhanced_picklist_page",    "EnhancedPicklistPage"),
     ("Scanner",       "system-search",     "scanner_page",     "ScannerPage"),
     ("Back-Orders",   "view-list",         "backorders_page",  "BackordersPage"),
     ("Rapor",         "x-office-spreadsheet", "report_page",  "ReportPage"),
@@ -38,47 +38,12 @@ _PAGES = [
     ("Sevkiyat",      "truck",             "shipment_page",    "ShipmentPage"),
     ("Ayarlar",       "preferences-system", "enhanced_settings_page", "EnhancedSettingsPage"),
     ("Görevler",      "view-task",         "taskboard_page",   "TaskBoardPage"),
-    ("Kullanıcılar",  "user-group",        "user_page",        "UserPage"),
+    ("Kullanıcılar",  "user-group",        "user_management_page",        "UserManagementPage"),
     ("Yardım",        "help-about",        "help_page",        "HelpPage"),
     ("Barkodlar",     "qrcode",            "barcode_page",     "BarcodePage"),
 ]
 
 BASE_DIR = Path(__file__).resolve().parent
-
-
-class HelpDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Kısayol Kılavuzu")
-        self.resize(400, 300)
-        txt = QTextEdit(readOnly=True)
-        txt.setHtml("""
-        <h3>Klavye Kısayolları</h3>
-        <ul>
-          <li><b>Ctrl + +</b> → Yazı büyüt</li>
-          <li><b>Ctrl + -</b> → Yazı küçült</li>
-          <li><b>Ctrl + D</b> → Koyu Tema</li>
-          <li><b>F5</b> → Elle Yenile (Loader)</li>
-          <li><b>F1</b> → Bu pencere</li>
-        </ul>
-        """)
-        lay = QVBoxLayout(self); lay.addWidget(txt)
-
-
-
-from importlib import import_module
-from pathlib import Path
-from typing import Dict
-from app import register_toast
-from app.ui.toast import Toast
-from app.ui.dialogs.activity_viewer import ActivityViewer
-
-from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QListWidget, QListWidgetItem, QStackedWidget,
-    QHBoxLayout, QSizePolicy, QAction, QLabel, QDialog, QVBoxLayout, QTextEdit
-)
-from PyQt5.QtGui  import QIcon, QPalette, QColor
-from PyQt5.QtCore import QSize, Qt, QTimer
 
 # ---------------------------------------------------------------------------
 #  Yardım (F1) penceresi

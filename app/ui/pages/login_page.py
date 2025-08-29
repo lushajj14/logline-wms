@@ -12,6 +12,9 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QPixmap, QPalette, QColor
 from app.models.user import get_auth_manager, User
 import logging
+import json
+import base64
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,7 @@ class LoginPage(QWidget):
         self.auth_manager = get_auth_manager()
         self._setup_ui()
         self._failed_attempts = 0
+        self._load_saved_credentials()
     
     def _setup_ui(self):
         """Setup user interface."""
@@ -214,9 +218,11 @@ class LoginPage(QWidget):
                 user, token = result
                 self.show_success(f"Hoş geldiniz, {user.full_name}!")
                 
-                # Store token if remember me is checked
+                # Store credentials if remember me is checked
                 if self.remember_checkbox.isChecked():
-                    self._save_credentials(username)
+                    self._save_credentials(username, password)
+                else:
+                    self._clear_saved_credentials()
                 
                 # Emit success signal after short delay
                 QTimer.singleShot(1000, lambda: self.login_successful.emit(user))
@@ -270,20 +276,72 @@ class LoginPage(QWidget):
         self.set_form_enabled(True)
         self.error_label.hide()
     
-    def _save_credentials(self, username: str):
-        """Save username for remember me feature."""
-        import app.settings as st
-        st.set("login.last_username", username)
-        st.save()
+    def _save_credentials(self, username: str, password: str):
+        """Save encrypted credentials."""
+        try:
+            # Simple obfuscation (not real encryption, but better than plain text)
+            # For production, use proper encryption like cryptography library
+            from app.settings_manager import get_manager
+            manager = get_manager()
+            
+            # Encode password (basic obfuscation)
+            encoded_password = base64.b64encode(password.encode()).decode()
+            
+            # Save to settings
+            manager.set("login.remember_me", True)
+            manager.set("login.last_username", username)
+            manager.set("login.saved_password", encoded_password)
+            manager.save()
+            
+            logger.info(f"Credentials saved for user: {username}")
+        except Exception as e:
+            logger.error(f"Failed to save credentials: {e}")
+    
+    def _load_saved_credentials(self):
+        """Load saved credentials if they exist."""
+        try:
+            from app.settings_manager import get_manager
+            manager = get_manager()
+            
+            if manager.get("login.remember_me", False):
+                username = manager.get("login.last_username", "")
+                encoded_password = manager.get("login.saved_password", "")
+                
+                if username and encoded_password:
+                    # Decode password
+                    password = base64.b64decode(encoded_password.encode()).decode()
+                    
+                    # Fill form
+                    self.username_input.setText(username)
+                    self.password_input.setText(password)
+                    self.remember_checkbox.setChecked(True)
+                    
+                    # Focus on login button instead of password field
+                    QTimer.singleShot(100, self.login_button.setFocus)
+                    
+                    logger.info(f"Credentials loaded for user: {username}")
+        except Exception as e:
+            logger.error(f"Failed to load credentials: {e}")
+            self._clear_saved_credentials()
+    
+    def _clear_saved_credentials(self):
+        """Clear saved credentials."""
+        try:
+            from app.settings_manager import get_manager
+            manager = get_manager()
+            
+            manager.set("login.remember_me", False)
+            manager.set("login.last_username", "")
+            manager.set("login.saved_password", "")
+            manager.save()
+            
+            logger.info("Saved credentials cleared")
+        except Exception as e:
+            logger.error(f"Failed to clear credentials: {e}")
     
     def load_saved_credentials(self):
-        """Load saved username if remember me was checked."""
-        import app.settings as st
-        last_username = st.get("login.last_username", "")
-        if last_username:
-            self.username_input.setText(last_username)
-            self.remember_checkbox.setChecked(True)
-            self.password_input.setFocus()
+        """Legacy function for compatibility."""
+        self._load_saved_credentials()
     
     def showEvent(self, event):
         """Handle show event."""
