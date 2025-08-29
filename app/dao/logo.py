@@ -78,12 +78,75 @@ CONN_STR = (
 QUEUE_TABLE = "WMS_PICKQUEUE"  # kalıcı kuyruk tablosu
 
 # ---------------------------------------------------------------------------
+# Connection Pool Configuration
+# ---------------------------------------------------------------------------
+# Enable/disable connection pooling via environment variable
+USE_CONNECTION_POOL = os.getenv("DB_USE_POOL", "true").lower() in ("true", "1", "yes", "on")
+
+# Initialize connection pool if enabled
+_connection_pool_initialized = False
+
+def _initialize_pool_if_needed():
+    """Initialize connection pool on first use if enabled."""
+    global _connection_pool_initialized
+    
+    if not USE_CONNECTION_POOL or _connection_pool_initialized:
+        return
+    
+    try:
+        from app.dao.connection_pool import initialize_global_pool
+        
+        # Pool configuration from environment variables
+        min_conn = int(os.getenv("DB_POOL_MIN_CONNECTIONS", "2"))
+        max_conn = int(os.getenv("DB_POOL_MAX_CONNECTIONS", "8"))
+        
+        success = initialize_global_pool(
+            connection_string=CONN_STR,
+            min_connections=min_conn,
+            max_connections=max_conn,
+            connection_timeout=CONN_TIMEOUT
+        )
+        
+        if success:
+            _connection_pool_initialized = True
+            logger.info(f"Connection pool enabled (min:{min_conn}, max:{max_conn})")
+        else:
+            logger.warning("Connection pool initialization failed, falling back to direct connections")
+            
+    except Exception as e:
+        logger.warning(f"Failed to initialize connection pool: {e}, using direct connections")
+
+
 @contextmanager
 def get_conn(*, autocommit: bool = False):
     """
-    MSSQL bağlantısı üretir; geçici hatalarda max 3 kez yeniden dener.
-    Başarı → pyodbc.Connection  |  Başarısız → son hatayı yükseltir.
+    MSSQL bağlantısı üretir. Connection pool kullanır (varsa).
+    Pool yoksa geçici hatalarda max 3 kez yeniden dener.
+    
+    Args:
+        autocommit: Autocommit mode (default: False)
+        
+    Yields:
+        pyodbc.Connection: Database connection
+        
+    Raises:
+        pyodbc.Error: Database connection error after retries
     """
+    # Try connection pool first if enabled
+    if USE_CONNECTION_POOL:
+        _initialize_pool_if_needed()
+        
+        if _connection_pool_initialized:
+            try:
+                from app.dao.connection_pool import get_pooled_connection
+                logger.debug("Using pooled connection")
+                with get_pooled_connection(autocommit=autocommit) as conn:
+                    yield conn
+                return
+            except Exception as e:
+                logger.warning(f"Pool connection failed, falling back to direct: {e}")
+    
+    # Fallback to direct connection (original implementation)
     last_exc = None
     for attempt in range(1, MAX_RETRY + 1):
         try:
@@ -94,7 +157,8 @@ def get_conn(*, autocommit: bool = False):
             logger.warning(
                 "DB bağlantı hatası (deneme %d/%d): %s",
                 attempt, MAX_RETRY, exc)
-            time.sleep(RETRY_WAIT)
+            if attempt < MAX_RETRY:  # Don't sleep after last attempt
+                time.sleep(RETRY_WAIT)
     else:                              # for-else 👉 3 deneme de başarısız
         raise last_exc                 # ↑ main window yakalayacak
 
@@ -141,7 +205,10 @@ def fetch_one(sql: str, *params) -> Dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 def fetch_draft_orders(*, limit: int = 100) -> List[Dict[str, Any]]:
-    """`STATUS = 1` (öneri) siparişleri getirir."""
+    """`STATUS = 1` (öneri) siparişleri getirir.
+    
+    DEPRECATED: Use fetch_draft_orders_paginated() for better performance.
+    """
     sql = f"""
     SELECT TOP (?)
         F.LOGICALREF AS order_id,
@@ -166,6 +233,8 @@ def fetch_draft_orders(*, limit: int = 100) -> List[Dict[str, Any]]:
 def fetch_picking_orders(limit: int = 100) -> List[Dict[str, Any]]:
     """
     STATUS = 2 (picking) durumundaki sipariş başlıklarını döndürür.
+    
+    DEPRECATED: Use fetch_picking_orders_paginated() for better performance.
     """
     sql = f"""
     SELECT TOP (?) 
@@ -556,3 +625,57 @@ def get_connection(autocommit: bool = True):
     pyodbc.Connection
     """
     return pyodbc.connect(CONN_STR, autocommit=autocommit)
+
+
+# ---------------------------------------------------------------------------
+# Connection Pool Management Functions
+# ---------------------------------------------------------------------------
+
+def get_pool_info() -> dict:
+    """
+    Connection pool bilgilerini döndürür.
+    
+    Returns:
+        dict: Pool statistics and configuration info
+    """
+    info = {
+        "pool_enabled": USE_CONNECTION_POOL,
+        "pool_initialized": _connection_pool_initialized,
+        "connection_string": CONN_STR.replace(PASSWORD, "***") if PASSWORD else CONN_STR,
+        "stats": None
+    }
+    
+    if USE_CONNECTION_POOL and _connection_pool_initialized:
+        try:
+            from app.dao.connection_pool import get_pool_stats
+            info["stats"] = get_pool_stats()
+        except Exception as e:
+            info["error"] = str(e)
+    
+    return info
+
+
+def close_connection_pool():
+    """Connection pool'u kapatır ve tüm bağlantıları serbest bırakır."""
+    global _connection_pool_initialized
+    
+    if USE_CONNECTION_POOL and _connection_pool_initialized:
+        try:
+            from app.dao.connection_pool import close_global_pool
+            close_global_pool()
+            _connection_pool_initialized = False
+            logger.info("Connection pool closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing connection pool: {e}")
+
+
+def reinitialize_pool():
+    """Connection pool'u yeniden başlatır."""
+    global _connection_pool_initialized
+    
+    if USE_CONNECTION_POOL:
+        close_connection_pool()
+        _connection_pool_initialized = False
+        _initialize_pool_if_needed()
+        return _connection_pool_initialized
+    return False

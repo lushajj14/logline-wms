@@ -49,23 +49,12 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 SOUND_DIR = BASE_DIR / "sounds"
 
 # ═══════════════════════════════════════════════════════════════
-# PERFORMANS İYİLEŞTİRMESİ 1: Ses Cache (Memory)
+# Ses yönetimi - Merkezi sound manager kullan
 # ═══════════════════════════════════════════════════════════════
-_sound_cache = {}
+from app.utils.sound_manager import get_sound_manager
 
-
-def _load_wav(name):
-    if name not in _sound_cache:
-        s = QSoundEffect()
-        s.setSource(QUrl.fromLocalFile(str(SOUND_DIR / name)))
-        s.setVolume(0.9)
-        _sound_cache[name] = s
-    return _sound_cache[name]
-
-
-snd_ok = _load_wav("ding.wav")
-snd_dupe = _load_wav("bip.wav")
-snd_err = _load_wav("error.wav")
+# Sound manager instance - memory leak önlenir
+sound_manager = get_sound_manager()
 
 # ───────────────────────── Tablo kolonları
 COLS = [
@@ -501,20 +490,20 @@ class LoaderPage(QWidget):
             raw = self.entry.text().strip()
             self.entry.clear()
             if not raw or "-K" not in raw:
-                snd_err.play()                                  # 🔊 hata
+                sound_manager.play_error()                      # 🔊 hata
                 return
 
             inv_root, pkg_txt = raw.rsplit("-K", 1)
             try:
                 pkg_no = int(pkg_txt)
             except ValueError:
-                snd_err.play()                                  # 🔊 hata
+                sound_manager.play_error()                      # 🔊 hata
                 return
 
             # ► Aktif sevkiyat başlığını bul
             trip = trip_by_barkod(inv_root)          # tarih filtresiz
             if not trip:
-                snd_err.play()                                  # 🔊 hata
+                sound_manager.play_error()                      # 🔊 hata
                 QMessageBox.warning(self, "Paket", "Sevkiyat başlığı bulunamadı!")
                 return
 
@@ -535,12 +524,12 @@ class LoaderPage(QWidget):
                     "DELETE FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ?",
                     trip_id, pkg_no
                 )
-                snd_err.play()                                  # 🔊 hata
+                sound_manager.play_error()                      # 🔊 hata
                 QMessageBox.warning(self, "Paket", f"Paket numarası geçersiz! (1-{pkg_tot} arası olmalı)\nFazla paket kaydı silindi.")
                 return
             
             if not (1 <= pkg_no <= pkg_tot):
-                snd_err.play()                                  # 🔊 hata
+                sound_manager.play_error()                      # 🔊 hata
                 QMessageBox.warning(self, "Paket", f"Paket numarası geçersiz! (1-{pkg_tot} arası olmalı)")
                 return
 
@@ -549,7 +538,7 @@ class LoaderPage(QWidget):
             # ──────────────────────────────────────────────
             ok = mark_loaded(trip_id, pkg_no)
             if ok == 0:                 # yinelenen okuma
-                snd_dupe.play()                             # 🔊 tekrar
+                sound_manager.play_duplicate()               # 🔊 tekrar
                 toast("Uyarı", "Bu paket zaten yüklenmiş!")
                 return
 
@@ -577,7 +566,7 @@ class LoaderPage(QWidget):
                     print(f"❌ shipment_lines güncelleme hatası: {e}")
                     # Hata olsa bile devam et
 
-            snd_ok.play()                                   # 🔊 başarılı okuma
+            sound_manager.play_ok()                         # 🔊 başarılı okuma
             toast("Paket Yüklendi", f"{inv_root} K{pkg_no}")
             
             # ╔════════════════════════════════════════════════════════════╗
@@ -603,10 +592,8 @@ class LoaderPage(QWidget):
         self._auto_focus = st.get("ui.auto_focus", True)
 
         # ► Ses
-        vol = st.get("ui.sounds.volume", 0.9)
-        enabled = st.get("ui.sounds.enabled", True)
-        for s in (snd_ok, snd_dupe, snd_err):
-            s.setVolume(vol if enabled else 0.0)
+        # Sound manager ayarlarını uygula
+        sound_manager.apply_settings()
 
 
 

@@ -64,22 +64,55 @@ CONN_STR = (
 
 @contextmanager
 def get_conn():
-    """Context manager for database connections"""
+    """
+    Context manager for database connections.
+    Uses connection pool if available, falls back to direct connection.
+    """
     conn = None
+    use_pool = False
+    
     try:
+        # Try to use connection pool from DAO layer
+        # Check if pool is available and enabled
+        if os.getenv("DB_USE_POOL", "true").lower() in ("true", "1", "yes", "on"):
+            try:
+                from app.dao.connection_pool import get_pooled_connection
+                # Use the pooled connection directly
+                with get_pooled_connection(autocommit=False) as pool_conn:
+                    use_pool = True
+                    yield pool_conn
+                return
+            except (ImportError, Exception) as e:
+                # Pool not available or failed, fall back to direct connection
+                pass
+        
+        # Fallback to direct connection
         conn = pyodbc.connect(CONN_STR, timeout=CONN_TIMEOUT)
         yield conn
+        
     except pyodbc.Error as e:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             f"DB bağlantı hatası: {e}",
         )
+    except Exception as e:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Beklenmeyen hata: {e}",
+        )
     finally:
-        if conn:
-            conn.close()
+        # Only close if using direct connection (pool handles its own connections)
+        if conn and not use_pool:
+            try:
+                conn.close()
+            except:
+                pass
 
 def get_conn_cur() -> tuple[pyodbc.Connection, pyodbc.Cursor]:
-    """Legacy function - use get_conn() instead"""
+    """
+    Legacy function - use get_conn() context manager instead.
+    This function is deprecated and should be avoided.
+    """
     try:
         conn = pyodbc.connect(CONN_STR, timeout=CONN_TIMEOUT)
         return conn, conn.cursor()
@@ -426,3 +459,50 @@ def load_pkg(trip_id: int, pkg_no: int, _: TokenData):
 @app.post("/change_pwd")
 def change_pwd(data: dict, _: TokenData):
     return {"msg": "ok"}
+
+
+# --- Connection Pool Monitoring ---
+@app.get("/system/pool_status")
+def pool_status():
+    """
+    Connection pool durumunu döndürür.
+    Admin kullanıcılar için sistem bilgisi.
+    """
+    try:
+        from app.dao.logo import get_pool_info
+        return get_pool_info()
+    except ImportError:
+        return {
+            "pool_enabled": False,
+            "error": "Pool module not available"
+        }
+    except Exception as e:
+        return {
+            "pool_enabled": False,
+            "error": str(e)
+        }
+
+
+@app.post("/system/pool_reinit")
+def pool_reinitialize(_: TokenData):
+    """
+    Connection pool'u yeniden başlatır.
+    Admin yetkisi gerekir.
+    """
+    try:
+        from app.dao.logo import reinitialize_pool
+        success = reinitialize_pool()
+        return {
+            "success": success,
+            "message": "Pool reinitialized" if success else "Pool reinitialization failed"
+        }
+    except ImportError:
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            "Pool module not available"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Pool reinitialization error: {e}"
+        )

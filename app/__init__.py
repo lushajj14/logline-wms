@@ -19,7 +19,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logging.info("Logging başlatıldı  ➜  %s", LOG_DIR)
+logging.info("Logging baslatildi -> %s", LOG_DIR)
 
 
 

@@ -34,15 +34,9 @@ from PyQt5.QtGui import QColor
 BASE_DIR = Path(__file__).resolve().parents[3]
 SOUND_DIR = BASE_DIR / "sounds"
 
-def _load_wav(name: str) -> QSoundEffect:
-    s = QSoundEffect()
-    s.setSource(QUrl.fromLocalFile(str(SOUND_DIR / name)))
-    s.setVolume(0.9)          # 0.0-1.0
-    return s
-
-snd_ok   = _load_wav("ding.wav")     # başarılı okuma
-snd_dupe = _load_wav("bip.wav")      # yinelenen
-snd_err  = _load_wav("error.wav")    # hata
+# Sound manager kullan - memory leak önlenir
+from app.utils.sound_manager import get_sound_manager
+sound_manager = get_sound_manager()
 
 # ---------------------------------------------------------------------------
 if str(BASE_DIR) not in sys.path:
@@ -109,8 +103,9 @@ class ScannerPage(QWidget):
             self.sent:  Dict[str, float] = {}
             self._order_map: Dict[str, Dict] = {}
             
-            # Performans optimizasyonları için cache
-            self._barcode_cache: Dict[str, tuple] = {}  # barkod lookup cache
+            # Thread-safe cache implementation
+            from app.utils.thread_safe_cache import get_barcode_cache
+            self._barcode_cache = get_barcode_cache()  # Thread-safe barcode cache
             self._warehouse_set: set = set()  # mevcut siparişin depoları
             self._scan_lock = threading.Lock()  # Thread-safe scan işlemi için lock
             
@@ -128,11 +123,8 @@ class ScannerPage(QWidget):
 
     def apply_settings(self):
         """UI ayarlarını anında uygula."""
-        # Ses
-        vol = st.get("ui.sounds.volume", 0.9)
-        enabled = st.get("ui.sounds.enabled", True)
-        for s in (snd_ok, snd_dupe, snd_err):
-            s.setVolume(vol if enabled else 0.0)
+        # Sound manager ayarlarını uygula
+        sound_manager.apply_settings()
 
         # Over-scan toleransı
         self._over_tol = st.get("scanner.over_scan_tol", 0)
@@ -264,7 +256,7 @@ class ScannerPage(QWidget):
             self.lines = fetch_order_lines(self.current_order["order_id"])
             sent_map = {r["item_code"]: r["qty_sent"] for r in queue_fetch(self.current_order["order_id"]) }
             
-            # Cache temizle ve depo setini hazırla
+            # Thread-safe cache temizle ve depo setini hazırla
             self._barcode_cache.clear()
             self._warehouse_set = {ln["warehouse_id"] for ln in self.lines}
             
@@ -292,27 +284,27 @@ class ScannerPage(QWidget):
         if not raw:
             return
         if len(raw) < 2:
-            snd_err.play()
+            sound_manager.play_error()
             QMessageBox.warning(self, "Barkod", "Barkod çok kısa!")
             return
             
         # 2. Sipariş seçili mi?
         if not self.current_order:
-            snd_err.play()
+            sound_manager.play_error()
             QMessageBox.warning(self, "Sipariş", "Önce sipariş seçin!")
             return
             
         # 3. Geçersiz karakterler (sadece alfanumerik + tire/alt çizgi/slash)
         allowed_chars = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_/")
         if not all(c.upper() in allowed_chars for c in raw):
-            snd_err.play()
+            sound_manager.play_error()
             QMessageBox.warning(self, "Barkod", "Barkod geçersiz karakterler içeriyor!")
             return
             
         # 4. Depo prefix kontrolü - yanlış depo barkodu
         detected_wh = self._infer_wh_from_prefix(raw)
         if detected_wh and detected_wh not in self._warehouse_set:
-            snd_err.play()
+            sound_manager.play_error()
             QMessageBox.warning(self, "Depo Hatası", 
                               f"Bu barkod farklı depo için (Depo: {detected_wh})!\nBu siparişin depoları: {', '.join(self._warehouse_set)}")
             return
@@ -322,17 +314,20 @@ class ScannerPage(QWidget):
             return  # Başka bir scan işlemi devam ediyor
         
         try:
-            # Cache kontrolü - lock içinde yapılmalı
+            # Thread-safe cache kontrolü
             cache_key = f"{raw}_{self.current_order['order_id']}"
-            if cache_key in self._barcode_cache:
-                matched_line, qty_inc = self._barcode_cache[cache_key]
+            cached_result = self._barcode_cache.get(cache_key)
+            
+            if cached_result:
+                matched_line, qty_inc = cached_result
             else:
                 matched_line, qty_inc = self._find_matching_line(raw)
-                # Cache güncelleme lock içinde olmalı
-                self._barcode_cache[cache_key] = (matched_line, qty_inc)
+                if matched_line:
+                    # Thread-safe cache update
+                    self._barcode_cache.set(cache_key, (matched_line, qty_inc))
 
             if not matched_line:
-                snd_err.play()
+                sound_manager.play_error()
                 QMessageBox.warning(self, "Barkod / Kod", f"'{raw}' bu siparişte eşleşmedi!\n\nBu barkod:\n• Stok kodu değil\n• Depo prefix'i yanlış\n• barcode_xref'te yok")
                 log_activity(getpass.getuser(), "INVALID_SCAN",
                              details=raw, order_no=self.current_order["order_no"])
@@ -348,7 +343,7 @@ class ScannerPage(QWidget):
             over_tol = float(self._over_tol or 0)
 
             if sent_now + qty_inc > ordered + over_tol:
-                snd_err.play()
+                sound_manager.play_error()
                 QMessageBox.warning(
                     self, "Fazla Adet",
                     f"{code} için sipariş adedi {ordered}; {sent_now + qty_inc} okutulamaz."
@@ -374,12 +369,11 @@ class ScannerPage(QWidget):
                 self._update_single_row(code, sent_now + qty_inc)
                 
                 # Başarı sesi - en son
-                QTimer.singleShot(0, snd_ok.play)
+                QTimer.singleShot(0, sound_manager.play_ok)
             except Exception as e:
                 # Hata durumunda cache'i temizle
-                if cache_key in self._barcode_cache:
-                    del self._barcode_cache[cache_key]
-                snd_err.play()
+                self._barcode_cache.delete(cache_key)
+                sound_manager.play_error()
                 QMessageBox.critical(self, "Database Hatası", f"Kayıt güncellenemedi: {e}")
                 return
             
@@ -395,7 +389,7 @@ class ScannerPage(QWidget):
         except Exception as e:
             # Database error - show actual error to user
             logger.error(f"Barcode lookup error: {e}")
-            snd_err.play()
+            sound_manager.play_error()
             QMessageBox.critical(self, "Database Hatası", 
                                 f"Barkod kontrolü sırasında hata oluştu:\n{str(e)}\n\nLütfen IT desteğe başvurun.")
             return None, 1
@@ -565,7 +559,7 @@ class ScannerPage(QWidget):
             self.lines.clear()
             self.sent.clear()
             self.current_order = None
-            self._barcode_cache.clear()  # Cache temizle
+            self._barcode_cache.clear()  # Thread-safe cache temizle
             self._warehouse_set.clear()
             self.tbl.setRowCount(0)
             self.refresh_orders()
