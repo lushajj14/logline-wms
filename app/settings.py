@@ -74,31 +74,34 @@ def _deep_update(dst: Dict, src: Dict) -> None:
             dst[k] = v
 
 
-# JSON kullanılmıyor → disk yükleme/kaydetme no-op
+# JSON kullanımı için yeni settings_manager'ı kullan
+from app.settings_manager import get_manager
+
 def _load_disk() -> Dict[str, Any]:
-    return {}
+    """Load settings from JSON file."""
+    manager = get_manager()
+    return manager._settings
 
 
 def save() -> None:
-    pass
+    """Save settings to JSON file."""
+    manager = get_manager()
+    # Update manager's settings with current _cfg
+    manager._settings = _cfg.copy()
+    manager.save()
 
 
 # ───────────── Ana API ─────────────
 def reload() -> Dict[str, Any]:
     global _cfg
-    _cfg = {}
-    _deep_update(_cfg, DEFAULTS)        # 1) varsayılanlar
-
-    disk = _load_disk()                 # 2) kullanıcı JSON (boş)
-    _deep_update(_cfg, disk)
-
-    # scanner.prefixes tamamen override olsun
-    if isinstance(disk.get("scanner", {}).get("prefixes"), dict):
-        _cfg["scanner"]["prefixes"] = disk["scanner"]["prefixes"]
-
-    # —— Log klasörü yoksa oluştur —— 
+    # Use settings_manager for persistence
+    manager = get_manager()
+    _cfg = manager.load()
+    
+    # Ensure directories exist
     Path(get("paths.log_dir")).mkdir(parents=True, exist_ok=True)
     Path(get("paths.font_dir")).mkdir(parents=True, exist_ok=True)
+    
     return _cfg
 
 

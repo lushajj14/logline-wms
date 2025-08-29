@@ -1,0 +1,25 @@
+# Bandit Security Scanner Configuration
+
+[bandit]
+# Paths to exclude from scanning
+exclude_dirs:
+  - /tests/
+  - /venv/
+  - /.venv/
+  - /build/
+  - /dist/
+
+# Test IDs to skip
+skips:
+  - B101  # assert_used - OK for tests
+  - B601  # shell_true - We use it safely
+
+# Severity level
+level: LOW
+
+# Confidence level
+confidence: LOW
+
+# Output format
+format: json
+output_file: security_scan_results.json

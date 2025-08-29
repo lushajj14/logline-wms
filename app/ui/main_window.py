@@ -28,20 +28,19 @@ from PyQt5.QtCore import QSize, Qt
 
 # ---- Sidebar tanımı ---------------------------------------------
 _PAGES = [
-    ("Pick-List",    "document-print",   "picklist_page",   "PicklistPage"),
-    ("Scanner",       "system-search",    "scanner_page",    "ScannerPage"),
-    ("Back-Orders",   "view-list",        "backorders_page", "BackordersPage"),
-    ("Rapor",         "x-office-spreadsheet", "report_page", "ReportPage"),
-    ("Etiket",        "emblem-ok",        "label_page",     "LabelPage"),
-    ("Loader", "folder-download", "loader_page", "LoaderPage"),
-    ("Sevkiyat", "truck", "shipment_page", "ShipmentPage"),
-    ("Ayarlar",       "preferences-system", "settings_page", "SettingsPage"),
-    ("Görevler", "view-task", "taskboard_page", "TaskBoardPage"),
-    ("Kullanıcılar", "user-group", "user_page", "UserPage"),
-    ("Yardım",        "help-about",       "help_page",       "HelpPage"),
-    ("Barkodlar",     "qrcode",           "barcode_page",    "BarcodePage"),
-    
-    
+    ("Dashboard",     "applications-office",   "dashboard_page",   "DashboardPage"),
+    ("Pick-List",     "document-print",    "picklist_page",    "PicklistPage"),
+    ("Scanner",       "system-search",     "scanner_page",     "ScannerPage"),
+    ("Back-Orders",   "view-list",         "backorders_page",  "BackordersPage"),
+    ("Rapor",         "x-office-spreadsheet", "report_page",  "ReportPage"),
+    ("Etiket",        "emblem-ok",         "label_page",       "LabelPage"),
+    ("Loader",        "folder-download",   "loader_page",      "LoaderPage"),
+    ("Sevkiyat",      "truck",             "shipment_page",    "ShipmentPage"),
+    ("Ayarlar",       "preferences-system", "enhanced_settings_page", "EnhancedSettingsPage"),
+    ("Görevler",      "view-task",         "taskboard_page",   "TaskBoardPage"),
+    ("Kullanıcılar",  "user-group",        "user_page",        "UserPage"),
+    ("Yardım",        "help-about",        "help_page",        "HelpPage"),
+    ("Barkodlar",     "qrcode",            "barcode_page",     "BarcodePage"),
 ]
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -102,20 +101,7 @@ class HelpDialog(QDialog):
         lay = QVBoxLayout(self); lay.addWidget(t)
 
 # ---------------------------------------------------------------------------
-_PAGES = [
-    ("Pick-List",  "document-print",       "picklist_page",   "PicklistPage"),
-    ("Scanner",    "system-search",        "scanner_page",    "ScannerPage"),
-    ("Back-Orders","view-list",            "backorders_page", "BackordersPage"),
-    ("Rapor",      "x-office-spreadsheet", "report_page",     "ReportPage"),
-    ("Etiket",     "emblem-ok",            "label_page",      "LabelPage"),
-    ("Loader",     "folder-download",      "loader_page",     "LoaderPage"),
-    ("Sevkiyat",   "truck",                "shipment_page",   "ShipmentPage"),
-    ("Ayarlar",    "preferences-system",   "settings_page",   "SettingsPage"),
-    ("Görevler", "view-task", "taskboard_page", "TaskBoardPage"),
-    ("Kullanıcılar", "user-group", "user_page", "UserPage"),
-    ("Yardım",     "help-about",           "help_page",       "HelpPage"),
-    ("Barkodlar",   "qrcode",                "barcode_page",    "BarcodePage"), 
-]
+# DUPLICATE removed - using the main _PAGES list above with Dashboard
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -127,10 +113,17 @@ QTableWidget::item:selected { background:#3A5FCD; }
 """
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, user=None):
         super().__init__()
+        self.current_user = user
         register_toast(self._show_toast)
-        self.setWindowTitle("LOGLine Yönetim Paneli (Modüler)")
+        
+        # Pencere başlığını kullanıcı bilgisi ile güncelle
+        title = "LOGLine Yönetim Paneli (Modüler)"
+        if user:
+            title += f" - {user.full_name} ({user.role.upper()})"
+        self.setWindowTitle(title)
+        
         self.resize(1400, 900)  # Daha geniş başlangıç boyutu
         self.setMinimumSize(1200, 700)  # Minimum boyut belirle
         self._pages: Dict[str, QWidget] = {}
@@ -183,6 +176,22 @@ class MainWindow(QMainWindow):
         self.act_font_dec.triggered.connect(lambda: self.bump_font(-1))
         view_menu.addAction(self.act_font_inc); view_menu.addAction(self.act_font_dec)
 
+        # Kullanıcı
+        if self.current_user:
+            user_menu = bar.addMenu(f"Kullanıcı: {self.current_user.username}")
+            
+            # Profil bilgisi
+            act_profile = QAction(f"{self.current_user.full_name} ({self.current_user.role})", self)
+            act_profile.setEnabled(False)
+            user_menu.addAction(act_profile)
+            
+            user_menu.addSeparator()
+            
+            # Çıkış
+            act_logout = QAction("Çıkış Yap", self)
+            act_logout.triggered.connect(self._logout)
+            user_menu.addAction(act_logout)
+        
         # Yardım
         help_menu = bar.addMenu("Yardım")
         act_help = QAction("Kısayol Kılavuzu", self, shortcut="F1")
@@ -224,9 +233,13 @@ class MainWindow(QMainWindow):
             widget = QLabel(f"<b>{title}</b><br>Yükleme hatası:<br>{exc}")
             widget.setAlignment(Qt.AlignCenter)
 
-        # Özel bir “apply_settings()” varsa (örn. font/theme farkı), ilk açılışta uygula
+        # Özel bir "apply_settings()" varsa (örn. font/theme farkı), ilk açılışta uygula
         if hasattr(widget, "apply_settings") and callable(widget.apply_settings):
             widget.apply_settings()
+
+        # Dashboard ise kullanıcı bilgisini ver
+        if title == "Dashboard" and hasattr(widget, "set_current_user"):
+            widget.set_current_user(self.current_user)
 
         # Ayarlar paneli ise kaydet sinyalini yakala
         if title == "Ayarlar" and hasattr(widget, "settings_saved"):
@@ -310,6 +323,33 @@ class MainWindow(QMainWindow):
             if not getattr(self, "_db_err_warned", False):
                 self._show_toast("DB Bağlantı Hatası", str(exc)[:120])
                 self._db_err_warned = True
+    
+    def _logout(self):
+        """Kullanıcı çıkış işlemi"""
+        from PyQt5.QtWidgets import QMessageBox
+        from app.models.user import get_auth_manager
+        
+        # Onay al
+        reply = QMessageBox.question(
+            self, 
+            "Çıkış Onayı", 
+            "Çıkış yapmak istediğinizden emin misiniz?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Auth manager'dan logout
+            auth_manager = get_auth_manager()
+            auth_manager.logout()
+            
+            # Uygulamayı kapat ve yeniden başlat
+            QApplication.quit()
+            
+            # Yeniden login sayfası göster
+            import subprocess
+            import sys
+            subprocess.Popen([sys.executable] + sys.argv)
 
 # --------------------------------------------------------------------
 if __name__ == "__main__":

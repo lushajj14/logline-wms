@@ -1,3 +1,4 @@
+# Core Dependencies
 PyQt5==5.15.*
 PyQt5-Qt5
 PyQt5-sip
@@ -11,7 +12,19 @@ pillow
 qrcode[pil] 
 python-multipart>=0.0.7
 fastapi
+uvicorn[standard]>=0.24.0
 python-jose[cryptography]
+bcrypt>=4.0.0
 pyinstaller
 reportlab
 numpy
+
+# Testing Dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-env>=0.8.0
+pytest-mock>=3.10.0
+
+# Security Scanning
+bandit>=1.7.0
+safety>=2.3.0

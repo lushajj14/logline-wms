@@ -15,38 +15,17 @@ from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
 from pydantic import BaseModel
 
-# ───────────────────────────── Ayarlar
-# API Security - Generate secure secret key
-import secrets
-import sys
+# ───────────────────────────── Secure Configuration
+from app.config.env_config import get_config
 
-SECRET_KEY: str = os.getenv("API_SECRET", "")
-if not SECRET_KEY:
-    # Generate a secure random secret key
-    SECRET_KEY = secrets.token_urlsafe(32)
-    
-    # Log warning and provide the generated key for user to save
-    import warnings
-    warnings.warn(
-        f"\n{'='*60}\n"
-        f"SECURITY WARNING: No API_SECRET environment variable found!\n"
-        f"A temporary secret key has been generated for this session.\n"
-        f"Please save this key and set it as API_SECRET environment variable:\n\n"
-        f"API_SECRET={SECRET_KEY}\n"
-        f"\nOn Windows: set API_SECRET={SECRET_KEY}\n"
-        f"On Linux/Mac: export API_SECRET={SECRET_KEY}\n"
-        f"{'='*60}\n",
-        RuntimeWarning
-    )
-    
-    # In production, you might want to refuse to start without a proper secret
-    if os.getenv("ENVIRONMENT") == "production":
-        sys.exit("ERROR: API_SECRET must be set in production environment!")
+# Initialize configuration
+config = get_config()
+api_config = config.get_api_config()
 
-# Ensure SECRET_KEY is never None for type safety
-assert SECRET_KEY, "SECRET_KEY must not be empty"
-ALGO       = "HS256"
-TOKEN_MIN  = 120
+# API Security settings
+SECRET_KEY = api_config["secret_key"]
+ALGO = api_config["algorithm"]
+TOKEN_MIN = api_config["token_expire_minutes"]
 
 SERVER   = os.getenv("LOGO_SQL_SERVER", "192.168.5.100,1433")
 DATABASE = os.getenv("LOGO_SQL_DB",     "logo")
@@ -126,11 +105,16 @@ def get_conn_cur() -> tuple[pyodbc.Connection, pyodbc.Cursor]:
 app = FastAPI(title="Loader API")
 
 # ───────────────────────────── Auth yardımcıları
-def check_user(u: str, p: str) -> bool:
-    with pyodbc.connect(CONN_STR) as conn:
-        cur = conn.cursor()
-        cur.execute("EXEC dbo.sp_auth_login ?, ?", u, p)
-        return cur.fetchone() is not None
+def check_user(username: str, password: str) -> dict:
+    """Yeni kullanıcı sistemiyle authentication"""
+    try:
+        from app.dao.users_new import UserDAO
+        dao = UserDAO()
+        user_data = dao.authenticate(username, password)
+        return user_data
+    except Exception as e:
+        print(f"Auth error: {e}")
+        return None
 
 # ───────────────────────────── Giriş modeli
 class LoginData(BaseModel):
@@ -140,11 +124,29 @@ class LoginData(BaseModel):
 # ───────────────────────────── /login
 @app.post("/login")
 async def login(data: LoginData):
-    if not check_user(data.username, data.password):
+    user_data = check_user(data.username, data.password)
+    if not user_data:
         return JSONResponse(status_code=401, content={"msg": "Hatalı giriş"})
-    exp   = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MIN)
-    token = jwt.encode({"sub": data.username, "exp": exp}, SECRET_KEY, algorithm=ALGO)
-    return {"access_token": token, "token_type": "bearer", "user": {"username": data.username}}
+    
+    exp = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MIN)
+    token_data = {
+        "sub": data.username, 
+        "exp": exp,
+        "user_id": user_data["id"],
+        "role": user_data["role"]
+    }
+    token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGO)
+    
+    return {
+        "access_token": token, 
+        "token_type": "bearer", 
+        "user": {
+            "id": user_data["id"],
+            "username": user_data["username"],
+            "full_name": user_data["full_name"],
+            "role": user_data["role"]
+        }
+    }
 
 # ───────────────────────────── Token doğrulama
 def _decode_jwt(t: str):
@@ -436,19 +438,18 @@ def stats(from_date: str, to_date: str, _: TokenData):
 def pending_list(trip_id: int, _: TokenData):
     with get_conn() as conn:
         cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT pkg_no, 1 AS qty, loaded
-
-          FROM shipment_loaded
-         WHERE trip_id = ?
-        """,
-        trip_id,
-    )
-    return [
-        {"packageCode": r.pkg_no, "pieces": r.qty, "delivered": r.loaded}
-        for r in cur
-    ]
+        cur.execute(
+            """
+            SELECT pkg_no, 1 AS qty, loaded
+              FROM shipment_loaded
+             WHERE trip_id = ?
+            """,
+            trip_id,
+        )
+        return [
+            {"packageCode": r.pkg_no, "pieces": r.qty, "delivered": r.loaded}
+            for r in cur
+        ]
 
 # Diğer tek-koli /load_pkg endpoint'i (isteğe bağlı hâlâ duruyor)
 @app.post("/load_pkg")

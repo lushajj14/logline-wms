@@ -12,6 +12,11 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from app.ui.main_window import MainWindow
 import app.settings as settings            # ‹ settings.py içindeki fonksiyonlara erişim
 
+# Validate environment configuration at startup
+from app.config.validate_env import run_validation
+if not run_validation(exit_on_error=True):
+    sys.exit("Environment validation failed. Please check your configuration.")
+
 # ──────────────────────────────────────────────────────────
 # 1) 4K / yüksek-DPI ekran desteği
 # ──────────────────────────────────────────────────────────
@@ -64,10 +69,29 @@ def _excepthook(exctype, value, tb):
 sys.excepthook = _excepthook
 
 # ──────────────────────────────────────────────────────────
-# 5) Ana pencere
+# 5) Login sistemi ve ana pencere
 # ──────────────────────────────────────────────────────────
-win = MainWindow()
-win.show()
+from app.ui.pages.login_page import LoginPage
+from app.models.user import get_auth_manager
+
+def show_main_window(user):
+    """Ana pencereyi kullanıcı ile birlikte göster"""
+    global main_window
+    main_window = MainWindow(user=user)
+    main_window.show()
+    login_window.hide()
+
+def show_login_error():
+    """Login hata mesajı"""
+    QMessageBox.warning(login_window, "Giriş Hatası", "Kullanıcı adı veya şifre hatalı!")
+
+# Login penceresi oluştur
+login_window = LoginPage()
+login_window.login_successful.connect(show_main_window)
+login_window.show()
+
+# Global referans
+main_window = None
 
 # ──────────────────────────────────────────────────────────
 # 6) Çıkış

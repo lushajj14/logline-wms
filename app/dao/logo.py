@@ -41,32 +41,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Bağlantı Ayarları –  env > fallback
 # ---------------------------------------------------------------------------
-# Database credentials - MUST be set via environment variables for security
-SERVER     = os.getenv("LOGO_SQL_SERVER")
-DATABASE   = os.getenv("LOGO_SQL_DB")
-USER       = os.getenv("LOGO_SQL_USER")
-PASSWORD   = os.getenv("LOGO_SQL_PASSWORD")
+# Secure database configuration using environment variables
+from app.config.env_config import get_config
 
-# Validate required environment variables
-if not all([SERVER, DATABASE, USER, PASSWORD]):
-    # For backwards compatibility, use defaults but warn
-    import warnings
-    warnings.warn(
-        "SECURITY WARNING: Using default database credentials. "
-        "Please set environment variables: LOGO_SQL_SERVER, LOGO_SQL_DB, LOGO_SQL_USER, LOGO_SQL_PASSWORD",
-        RuntimeWarning
-    )
-    SERVER     = SERVER or "192.168.5.100,1433"
-    DATABASE   = DATABASE or "logo"
-    USER       = USER or "barkod1"
-    PASSWORD   = PASSWORD or "Barkod14*"  # This should NEVER be in production!
-COMPANY_NR = os.getenv("LOGO_COMPANY_NR", "025")    # firma
-PERIOD_NR  = os.getenv("LOGO_PERIOD_NR", "01")       # dönem (01‑12)
+# Initialize configuration
+config = get_config()
 
-# --- Sürücü seçimi ----------------------------------------------------------
-_available = [d for d in pyodbc.drivers() if d.startswith("ODBC Driver") and "SQL Server" in d]
-_available.sort(key=lambda s: int("".join(filter(str.isdigit, s))) or 0)  # 17,18… artan
-DRIVER = os.getenv("LOGO_SQL_DRIVER") or (_available[-1] if _available else "SQL Server")
+# Get database configuration with validation
+db_config = config.get_database_config()
+SERVER = db_config["server"]
+DATABASE = db_config["database"]
+USER = db_config["username"]
+PASSWORD = db_config["password"]
+DRIVER = db_config["driver"]
+COMPANY_NR = db_config["company_nr"]
+PERIOD_NR = db_config["period_nr"]
 
 logger.debug("Seçilen ODBC sürücüsü: %s", DRIVER)
 
@@ -203,6 +192,25 @@ def fetch_one(sql: str, *params) -> Dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 # DAO Fonksiyonları
 # ---------------------------------------------------------------------------
+
+def execute_query(sql: str, params: Optional[List] = None) -> int:
+    """Execute an INSERT/UPDATE/DELETE query and return affected rows.
+    
+    Args:
+        sql: SQL query to execute
+        params: Query parameters
+        
+    Returns:
+        Number of affected rows
+    """
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        conn.commit()
+        return cursor.rowcount
 
 def fetch_draft_orders(*, limit: int = 100) -> List[Dict[str, Any]]:
     """`STATUS = 1` (öneri) siparişleri getirir.
