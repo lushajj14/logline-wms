@@ -471,13 +471,15 @@ class EnhancedPicklistPage(QWidget):
                 total_str = "0.00 TL"
             self.tbl_orders.setItem(row, 5, QTableWidgetItem(total_str))
             
-            # Region - Extract the part after the first space (e.g., "KRD İSTANBUL" -> "İSTANBUL")
+            # Region - Remove KRD prefix if exists (e.g., "KRD-BOL1-GEREDE" -> "BOL1-GEREDE")
             region_full = str(order.get("region", ""))
-            if " " in region_full:
-                region = region_full.split(" ", 1)[1]  # Get everything after first space
+            if region_full.startswith("KRD-"):
+                region = region_full[4:]  # Remove "KRD-" prefix (4 characters)
+            elif region_full.startswith("KRD "):
+                region = region_full[4:]  # Remove "KRD " prefix
             else:
-                region = region_full
-            self.tbl_orders.setItem(row, 6, QTableWidgetItem(region[:20]))
+                region = region_full  # Keep as is if no KRD prefix
+            self.tbl_orders.setItem(row, 6, QTableWidgetItem(region))
             
             # Action button
             btn_pdf = QPushButton("PDF")
@@ -851,10 +853,12 @@ Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
             status_names = {1: "Taslak", 2: "Toplanıyor", 3: "Hazır", 4: "Tamamlandı"}
             status_text = status_names.get(order.get('status', 0), "Bilinmiyor")
             
-            # Extract region (part after first space)
+            # Extract region - Remove KRD prefix if exists
             region_full = str(order.get("region", ""))
-            if " " in region_full:
-                region = region_full.split(" ", 1)[1]
+            if region_full.startswith("KRD-"):
+                region = region_full[4:]  # Remove "KRD-" prefix
+            elif region_full.startswith("KRD "):
+                region = region_full[4:]  # Remove "KRD " prefix
             else:
                 region = region_full
             

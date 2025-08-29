@@ -16,14 +16,14 @@ from app import register_toast            # <–– EKLE
 from app.ui.toast import Toast            # <–– EKLE
 from app.ui.dialogs.activity_viewer import ActivityViewer  
 
-from PyQt5.QtWidgets import (       # ⬅ import bloğuna ekle
+from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QListWidget, QListWidgetItem, QStackedWidget,
-    QHBoxLayout, QSizePolicy, QAction, QTextEdit, QDialog, QVBoxLayout,QApplication           # ★ QAction, QDialog, QVBoxLayout eklendi
-    
+    QHBoxLayout, QSizePolicy, QAction, QTextEdit, QDialog, QVBoxLayout, 
+    QApplication, QLabel
 )
 from PyQt5.QtGui import QFont               # 🔸 font büyütme için
 from PyQt5.QtGui import QIcon, QPalette, QColor
-from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtCore import QSize, Qt, QTimer
 
 
 # ---- Sidebar tanımı ---------------------------------------------
