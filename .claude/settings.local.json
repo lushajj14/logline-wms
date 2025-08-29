@@ -27,7 +27,17 @@
       "Bash(copy:*)",
       "Bash(pip install:*)",
       "Bash(npm install)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(npm start:*)",
+      "Bash(.quick_test.bat)",
+      "Bash(uvicorn:*)",
+      "Bash(npm install:*)",
+      "Bash(set BROWSER=none)",
+      "Bash(npm run build:*)",
+      "Bash(xcopy:*)",
+      "Bash(node:*)",
+      "Bash(npx serve:*)",
+      "Bash(npx:*)"
     ],
     "deny": [],
     "ask": []
