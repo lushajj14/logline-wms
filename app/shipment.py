@@ -29,7 +29,13 @@ log    = logging.getLogger(__name__)
 SCHEMA = os.getenv("SHIP_SCHEMA", "dbo")
 
 # ────────────────────────────────────────────────────────────────
-#  DDL  (ilk import’ta tabloyu yaratır/alter eder)                
+#  Güvenli Paket Senkronizasyonu (Kısmi Sevkiyat Desteği)
+# ────────────────────────────────────────────────────────────────
+# Bu fonksiyon app/shipment_safe_sync.py dosyasına taşındı
+from app.shipment_safe_sync import safe_sync_packages
+
+# ────────────────────────────────────────────────────────────────
+#  DDL  (ilk import'ta tabloyu yaratır/alter eder)                
 # ────────────────────────────────────────────────────────────────
 
 def _create_tables() -> None:
@@ -176,30 +182,17 @@ def upsert_header(
         if header_row:
             trip_id = header_row.id if hasattr(header_row, 'id') else header_row[0]
 
-            # Mevcut shipment_loaded kayıt sayısını al
-            cursor.execute(
-                f"SELECT COUNT(*) FROM {SCHEMA}.shipment_loaded WHERE trip_id = ?",
-                trip_id
-            )
-            existing_count = cursor.fetchone()[0]
-
-            # Paket sayısı değişikliğini yönet
-            if pkgs_total > existing_count:
-                # Eksik kayıtları oluştur
-                for pkg_no in range(existing_count + 1, pkgs_total + 1):
-                    cursor.execute(
-                        f"""INSERT INTO {SCHEMA}.shipment_loaded 
-                            (trip_id, pkg_no, loaded, loaded_by, loaded_time)
-                            VALUES (?, ?, 0, NULL, NULL)""",
-                        trip_id, pkg_no
-                    )
-            elif pkgs_total < existing_count:
-                # Fazla kayıtları sil (paket sayısı azaltıldıysa)
-                cursor.execute(
-                    f"""DELETE FROM {SCHEMA}.shipment_loaded 
-                        WHERE trip_id = ? AND pkg_no > ?""",
-                    trip_id, pkgs_total
-                )
+            # Güvenli paket senkronizasyonu kullan (connection parametre almıyor artık)
+            sync_result = safe_sync_packages(trip_id, pkgs_total)
+            
+            if not sync_result["success"]:
+                log.error("Paket senkronizasyon hatası: %s", sync_result["message"])
+                raise ValueError(sync_result["message"])
+            else:
+                if sync_result["changes"]:
+                    log.info("Paketler güncellendi (%s): %s", order_no, sync_result["message"])
+                    for change in sync_result["changes"]:
+                        log.debug("  - %s", change)
     else:
         # Use new connection with autocommit
         with get_conn(autocommit=True) as cn:
@@ -230,23 +223,17 @@ def upsert_header(
                 )
                 existing_count = cur.fetchone()[0]
 
-                # Paket sayısı değişikliğini yönet
-                if pkgs_total > existing_count:
-                    # Eksik kayıtları oluştur
-                    for pkg_no in range(existing_count + 1, pkgs_total + 1):
-                        cn.execute(
-                            f"""INSERT INTO {SCHEMA}.shipment_loaded 
-                                (trip_id, pkg_no, loaded, loaded_by, loaded_time)
-                                VALUES (?, ?, 0, NULL, NULL)""",
-                            trip_id, pkg_no
-                        )
-                elif pkgs_total < existing_count:
-                    # Fazla kayıtları sil (paket sayısı azaltıldıysa)
-                    cn.execute(
-                        f"""DELETE FROM {SCHEMA}.shipment_loaded 
-                            WHERE trip_id = ? AND pkg_no > ?""",
-                        trip_id, pkgs_total
-                    )
+                # Güvenli paket senkronizasyonu kullan
+                sync_result = safe_sync_packages(trip_id, pkgs_total)
+                
+                if not sync_result["success"]:
+                    log.error("Paket senkronizasyon hatası: %s", sync_result["message"])
+                    raise ValueError(sync_result["message"])
+                else:
+                    if sync_result["changes"]:
+                        log.info("Paketler güncellendi (%s): %s", order_no, sync_result["message"])
+                        for change in sync_result["changes"]:
+                            log.debug("  - %s", change)
 
 
 # ────────────────────────────────────────────────────────────────

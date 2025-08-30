@@ -144,11 +144,11 @@ class LabelPage(QWidget):
     # ═══════════════════════════════════════════════════════════════
     def _sync_shipment_loaded(self, order_no: str, new_pkg_total: int):
         """
-        shipment_loaded tablosunu yeni paket sayısına göre senkronize et:
-        - Paket sayısı artırılırsa: eksik satırları oluştur
-        - Paket sayısı azaltılırsa: fazla satırları sil
+        shipment_loaded tablosunu güvenli şekilde senkronize et.
+        Merkezi safe_sync_packages fonksiyonunu kullanır.
         """
-        from app.dao.logo import exec_sql, fetch_all, fetch_one
+        from app.dao.logo import fetch_one
+        from app.shipment_safe_sync import safe_sync_packages
         
         try:
             # 1. İlgili shipment_header'ı bul
@@ -168,59 +168,25 @@ class LabelPage(QWidget):
             
             print(f"🔄 {order_no}: Paket sayısı {old_pkg_total} → {new_pkg_total}")
             
-            # 2. Mevcut shipment_loaded kayıtlarını al
-            existing_packages = fetch_all("""
-                SELECT pkg_no FROM shipment_loaded 
-                WHERE trip_id = ? 
-                ORDER BY pkg_no
-            """, trip_id)
+            # 2. Merkezi güvenli senkronizasyon fonksiyonunu kullan
+            sync_result = safe_sync_packages(trip_id, new_pkg_total)
             
-            existing_pkg_nos = [row["pkg_no"] for row in existing_packages]
-            max_existing = max(existing_pkg_nos) if existing_pkg_nos else 0
-            
-            print(f"📦 Mevcut paketler: {existing_pkg_nos}")
-            
-            if new_pkg_total > max_existing:
-                # 3A. Paket sayısı artırıldıysa: eksik paketleri oluştur
-                missing_packages = []
-                for pkg_no in range(1, new_pkg_total + 1):
-                    if pkg_no not in existing_pkg_nos:
-                        missing_packages.append(pkg_no)
-                
-                if missing_packages:
-                    print(f"➕ Oluşturulacak paketler: {missing_packages}")
-                    
-                    # Eksik paketleri oluştur (loaded=0 olarak)
-                    for pkg_no in missing_packages:
-                        exec_sql("""
-                            INSERT INTO shipment_loaded 
-                                (trip_id, pkg_no, loaded, loaded_at, loaded_by)
-                            VALUES (?, ?, 0, NULL, NULL)
-                        """, trip_id, pkg_no)
-                    
-                    print(f"✅ {len(missing_packages)} yeni paket oluşturuldu")
-            
-            elif new_pkg_total < max_existing:
-                # 3B. Paket sayısı azaltıldıysa: fazla paketleri sil
-                packages_to_delete = [pkg for pkg in existing_pkg_nos if pkg > new_pkg_total]
-                
-                if packages_to_delete:
-                    print(f"🗑️ Silinecek paketler: {packages_to_delete}")
-                    
-                    # Fazla paketleri sil
-                    placeholders = ",".join(["?"] * len(packages_to_delete))
-                    exec_sql(f"""
-                        DELETE FROM shipment_loaded 
-                        WHERE trip_id = ? AND pkg_no IN ({placeholders})
-                    """, trip_id, *packages_to_delete)
-                    
-                    print(f"✅ {len(packages_to_delete)} fazla paket silindi")
-            
+            if sync_result["success"]:
+                print(f"✅ {sync_result['message']}")
+                if sync_result["changes"]:
+                    for change in sync_result["changes"]:
+                        print(f"  - {change}")
+                        
+                # Yüklenmiş paket varsa uyarı ver
+                if sync_result["loaded_count"] > 0:
+                    print(f"⚠️ DİKKAT: {sync_result['loaded_count']} paket zaten yüklenmiş durumda!")
             else:
-                print("✅ Paket sayısı değişmedi, shipment_loaded senkronize")
+                print(f"❌ {sync_result['message']}")
+                QMessageBox.warning(self, "Paket Güncelleme Hatası", sync_result['message'])
                 
         except Exception as e:
             print(f"❌ shipment_loaded senkronizasyon hatası: {e}")
+            QMessageBox.critical(self, "Hata", f"Paket senkronizasyon hatası: {e}")
 
     # -------- Tek PDF basıcı ----------
     def _print_single(self, order_no: str, pkg_tot: int | None):

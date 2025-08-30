@@ -1641,30 +1641,16 @@ class ScannerPage(QWidget):
                             pkg_tot, trip_id
                         )
                         
-                        # If reducing, delete excess package records
-                        if pkg_tot < existing_total:
-                            cursor.execute(
-                                "DELETE FROM shipment_loaded "
-                                "WHERE trip_id = ? AND pkg_no > ?",
-                                trip_id, pkg_tot
-                            )
                 else:
                     raise Exception("Failed to create/update shipment header")
 
                 # ------------------------------------------------------------ 3-B
-                # Create package records
-                for k in range(1, pkg_tot + 1):
-                    cursor.execute(
-                        """
-                        MERGE dbo.shipment_loaded AS tgt
-                        USING (SELECT ? AS trip_id, ? AS pkg_no) src
-                        ON tgt.trip_id = src.trip_id AND tgt.pkg_no = src.pkg_no
-                        WHEN NOT MATCHED THEN
-                            INSERT (trip_id, pkg_no, loaded)
-                            VALUES (src.trip_id, src.pkg_no, 0);
-                        """,
-                        trip_id, k
-                    )
+                # Use centralized safe package synchronization
+                from app.shipment_safe_sync import safe_sync_packages
+                sync_result = safe_sync_packages(trip_id, pkg_tot)
+                
+                if not sync_result["success"]:
+                    raise Exception(f"Package sync failed: {sync_result['message']}")
 
                 # ------------------------------------------------------------ 3-C
                 # Process backorders and shipment lines

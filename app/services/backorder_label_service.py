@@ -69,7 +69,7 @@ def make_backorder_labels(
                 genexp4=f"PAKET SAYISI : {pkg_tot}",
                 genexp5=ord_no,
             )
-            log.info("GENEXP4/5 güncellendi → %s", ord_no)
+            log.info("GENEXP4/5 güncellendi -> %s", ord_no)
             
             # shipment_header tablosunu da güncelle (eğer varsa)
             from app.shipment import upsert_header
@@ -94,7 +94,7 @@ def make_backorder_labels(
                     address1=ship_hdr["address1"],
                     invoice_root=ship_hdr["invoice_root"]
                 )
-                log.info("shipment_header güncellendi: %s paket → %s", ord_no, pkg_tot)
+                log.info("shipment_header güncellendi: %s paket -> %s", ord_no, pkg_tot)
 
             # Yeni etiket üretimi
             create_labels(
@@ -102,7 +102,7 @@ def make_backorder_labels(
                 force=force,
                 footer="EGS"  # Eksik Gönderilen Sevkiyat dipnotu
             )
-            log.info("Etiketler üretildi → %s", ord_no)
+            log.info("Etiketler üretildi -> %s", ord_no)
             done.add(ord_no)
         except Exception as exc:
             log.error("Header güncelleme veya etiket üretim hatası %s: %s", ord_no, exc)
