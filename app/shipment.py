@@ -139,6 +139,14 @@ def upsert_header(
     invoice_root: str | None = None,
     conn=None,  # Optional transaction connection
 ) -> None:
+    
+    # Package count validation - prevent negative or zero package counts
+    if pkgs_total <= 0:
+        raise ValueError(f"HATA: Geçersiz paket sayısı: {pkgs_total}. Pozitif değer olmalı.")
+    
+    # Maximum package limit for safety
+    if pkgs_total > 9999:
+        raise ValueError(f"HATA: Paket sayısı çok büyük: {pkgs_total}. Maksimum 9999 paket desteklenir.")
 
     sql = f"""
     MERGE {SCHEMA}.shipment_header AS tgt
@@ -379,6 +387,13 @@ def mark_loaded(trip_id: int, pkg_no: int, *, item_code: str | None = None) -> i
     • Başarı: 1   |   Yinelenen okuma: 0
     • Race condition fixed with atomic MERGE operation
     """
+    # Package number validation - prevent negative or zero package numbers
+    if pkg_no <= 0:
+        raise ValueError(f"HATA: Geçersiz paket numarası: {pkg_no}. Pozitif değer olmalı.")
+    
+    # Maximum package number limit for safety
+    if pkg_no > 9999:
+        raise ValueError(f"HATA: Paket numarası çok büyük: {pkg_no}. Maksimum 9999 desteklenir.")
     with get_conn(autocommit=True) as cn:
         # Use atomic MERGE to prevent race conditions
         cursor = cn.cursor()

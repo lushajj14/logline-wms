@@ -227,8 +227,11 @@ def create_enhanced_picklist_pdf(order: dict, lines: List[dict]) -> Path:
     # Summary section
     elements.append(Spacer(1, 10*mm))
     
+    # Benzersiz ürün sayısını hesapla
+    unique_products = len(set(line.get("item_code") for line in lines if line.get("item_code")))
+    
     summary_data = [
-        ["Toplam Kalem:", str(len(lines))],
+        ["Toplam Kalem:", str(unique_products)],  # Artık benzersiz ürün sayısı
         ["Toplam Adet:", str(sum(line.get("qty_ordered", 0) for line in lines))],
     ]
     

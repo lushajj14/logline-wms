@@ -534,27 +534,57 @@ class LoaderPage(QWidget):
                         f"Paket sayısı en az {pkg_no} olmalıdır.")
                     return
                 else:
-                    # Yüklenmemiş fazla paket, güvenle silebiliriz
-                    # Silmeden önce bir kez daha kontrol (race condition koruması)
-                    recheck = fetch_one(
-                        "SELECT loaded FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ?",
-                        trip_id, pkg_no
-                    )
-                    
-                    if recheck and recheck["loaded"] == 0:
-                        # Hala yüklenmemiş, güvenle sil
-                        exec_sql(
-                            "DELETE FROM shipment_loaded WHERE trip_id = ? AND pkg_no = ? AND loaded = 0",
-                            trip_id, pkg_no
-                        )
-                        sound_manager.play_error()                      # 🔊 hata
-                        QMessageBox.warning(self, "Paket", f"Paket numarası geçersiz! (1-{pkg_tot} arası olmalı)\nFazla paket kaydı silindi.")
-                    else:
-                        # Bu arada yüklenmiş olabilir
+                    # Yüklenmemiş fazla paket, güvenli atomic delete işlemi
+                    try:
+                        from app.dao.transactions import transaction_scope
+                        
+                        # Atomic transaction kullanarak güvenli delete
+                        with transaction_scope() as conn:
+                            cursor = conn.cursor()
+                            
+                            # Triple check with row locking - race condition koruması
+                            cursor.execute(
+                                """
+                                SELECT loaded FROM shipment_loaded WITH (UPDLOCK, ROWLOCK)
+                                WHERE trip_id = ? AND pkg_no = ?
+                                """,
+                                trip_id, pkg_no
+                            )
+                            final_check = cursor.fetchone()
+                            
+                            if final_check and final_check[0] == 0:
+                                # Hala yüklenmemiş ve lock'lanmış, güvenle sil
+                                cursor.execute(
+                                    """
+                                    DELETE FROM shipment_loaded 
+                                    WHERE trip_id = ? AND pkg_no = ? AND loaded = 0
+                                    """,
+                                    trip_id, pkg_no
+                                )
+                                
+                                # Verify deletion was successful
+                                if cursor.rowcount > 0:
+                                    sound_manager.play_error()
+                                    QMessageBox.warning(self, "Paket", 
+                                        f"Paket numarası geçersiz! (1-{pkg_tot} arası olmalı)\n"
+                                        f"Fazla paket kaydı güvenli şekilde silindi.")
+                                else:
+                                    sound_manager.play_error()
+                                    QMessageBox.critical(self, "Kritik Hata", 
+                                        f"Paket #{pkg_no} silinirken beklenmeyen durum!\n"
+                                        f"İşlem iptal edildi.")
+                            else:
+                                # Bu arada yüklenmiş olabilir
+                                sound_manager.play_error()
+                                QMessageBox.critical(self, "Kritik Hata", 
+                                    f"Paket #{pkg_no} silme işlemi sırasında yüklenmiş!\n"
+                                    f"İşlem iptal edildi. Yüklenmiş paketler silinemez.")
+                                    
+                    except Exception as e:
                         sound_manager.play_error()
-                        QMessageBox.critical(self, "Kritik Hata", 
-                            f"Paket #{pkg_no} silme işlemi sırasında yüklenmiş!\n"
-                            f"İşlem iptal edildi.")
+                        QMessageBox.critical(self, "Database Hatası", 
+                            f"Paket silme işlemi başarısız: {str(e)}")
+                        
                     return
             
             if not (1 <= pkg_no <= pkg_tot):

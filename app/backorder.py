@@ -191,11 +191,60 @@ def list_pending() -> List[Dict[str,Any]]:
         cols = [c[0].lower() for c in cur.description]
         return [dict(zip(cols,row)) for row in cur.fetchall()]
 
-def mark_fulfilled(back_id:int):
-    sql = f"""UPDATE {SCHEMA}.backorders
-              SET fulfilled=1, fulfilled_at=GETDATE() WHERE id=?"""
+def mark_fulfilled(back_id:int, qty_scanned:float=None, scanned_by:str=None):
+    """
+    Backorder'ı fulfilled olarak işaretle ve okutma bilgilerini güncelle.
+    qty_scanned: Okutulan miktar (None ise qty_missing kadar varsayılır)
+    scanned_by: Kim okuttu
+    """
+    import getpass
+    from datetime import datetime
+    
+    # Önce mevcut veriyi al
+    with get_conn() as cn:
+        row = cn.execute(f"SELECT * FROM {SCHEMA}.backorders WHERE id=?", back_id).fetchone()
+        if not row:
+            return False
+            
+    # qty_scanned belirtilmediyse, qty_missing kadar okutulmuş say
+    if qty_scanned is None:
+        qty_scanned = row.qty_missing
+    
+    # scanned_by belirtilmediyse, sistem kullanıcısını al
+    if scanned_by is None:
+        try:
+            scanned_by = getpass.getuser()
+        except:
+            scanned_by = 'SYSTEM'
+    
+    # Backorders tablosunu güncelle
+    sql_update = f"""UPDATE {SCHEMA}.backorders
+                     SET fulfilled=1, 
+                         fulfilled_at=GETDATE(),
+                         qty_scanned=?,
+                         scanned_by=?,
+                         scanned_at=GETDATE()
+                     WHERE id=?"""
+    
     with get_conn(autocommit=True) as cn:
-        cn.execute(sql, back_id)
+        cn.execute(sql_update, qty_scanned, scanned_by, back_id)
+        
+        # Eğer fulfilled olduysa, shipment_lines'a da ekle
+        if row.order_no and row.item_code:
+            # trip_date olarak bugünü kullan
+            trip_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # shipment_lines'a ekle (backorder'dan tamamlanan olarak işaretle)
+            add_shipment(
+                order_no=row.order_no,
+                trip_date=trip_date,
+                item_code=row.item_code,
+                warehouse_id=row.warehouse_id or 0,
+                invoiced_qty=row.qty_missing,  # İstenen miktar
+                qty_delta=qty_scanned  # Okutulup gönderilen miktar
+            )
+    
+    return True
 
 
 # --------------------------------------------------------------------

@@ -127,6 +127,17 @@ def create_picklist_pdf(order: dict, lines: List[dict]) -> Path:
     )
 
     elements.append(tbl)
+    
+    # Özet bilgileri ekle
+    elements.append(Spacer(1, 6 * mm))
+    
+    # Benzersiz ürün sayısını hesapla
+    unique_products = len(set(line["item_code"] for line in lines if line.get("item_code")))
+    total_qty = sum(line.get("qty_ordered", 0) for line in lines)
+    
+    summary_text = f"<b>Toplam:</b> {unique_products} kalem, {total_qty} adet"
+    elements.append(Paragraph(summary_text, ParagraphStyle("summary", fontName=DEFAULT_FONT, fontSize=10)))
+    
     doc.build(elements)
     return pdf_path
 

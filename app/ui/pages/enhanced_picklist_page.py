@@ -392,13 +392,17 @@ class EnhancedPicklistPage(QWidget):
                 return
             
             # Single query to get all line counts
+            # Filter out cancelled lines and invalid stock references to get accurate count
             order_ids_str = ",".join(map(str, order_ids))
             query = f"""
                 SELECT 
                     ORDFICHEREF as order_id,
-                    COUNT(*) as line_count
+                    COUNT(DISTINCT STOCKREF) as line_count
                 FROM {_t('ORFLINE')}
                 WHERE ORDFICHEREF IN ({order_ids_str})
+                  AND CANCELLED = 0             -- Exclude cancelled/deleted lines
+                  AND STOCKREF IS NOT NULL      -- Exclude invalid stock references
+                  AND STOCKREF > 0
                 GROUP BY ORDFICHEREF
             """
             
@@ -848,8 +852,8 @@ Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
             
             layout = QVBoxLayout(dialog)
             
-            # Order info with actual line count
-            line_count = len(lines)
+            # Order info with actual unique product count
+            unique_products = len(set(line.get("item_code") for line in lines if line.get("item_code")))
             status_names = {1: "Taslak", 2: "Toplanıyor", 3: "Hazır", 4: "Tamamlandı"}
             status_text = status_names.get(order.get('status', 0), "Bilinmiyor")
             
@@ -868,7 +872,7 @@ Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
             Tarih: {order.get('order_date')}
             Durum: {status_text}
             Bölge: {region}
-            Kalem Sayısı: {line_count} kalem
+            Kalem Sayısı: {unique_products} kalem
             """
             info_label = QLabel(info_text)
             info_label.setStyleSheet("font-size: 11pt; padding: 10px;")
@@ -912,7 +916,7 @@ Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
             layout.addWidget(table)
             
             # Summary
-            summary_label = QLabel(f"Toplam: {line_count} kalem ürün")
+            summary_label = QLabel(f"Toplam: {unique_products} kalem ürün")
             summary_label.setStyleSheet("font-weight: bold; padding: 5px;")
             layout.addWidget(summary_label)
             

@@ -567,8 +567,16 @@ def queue_fetch(order_id: int) -> List[Dict[str, Any]]:
 
 
 def queue_inc(order_id: int, item_code: str, inc: float = 1):
-    """Barkod okutuldukça `qty_sent += inc`."""
-    sql = f"""UPDATE {QUEUE_TABLE} SET qty_sent = qty_sent + ? WHERE order_id = ? AND item_code = ?"""
+    """
+    Barkod okutuldukça `qty_sent += inc`.
+    Race condition koruması için WITH (UPDLOCK) kullanır ve atomic update işlemi yapar.
+    """
+    # Use atomic UPDATE with row-level locking to prevent race conditions
+    sql = f"""
+    UPDATE {QUEUE_TABLE} WITH (UPDLOCK, ROWLOCK)
+    SET qty_sent = qty_sent + ?
+    WHERE order_id = ? AND item_code = ?
+    """
     exec_sql(sql, inc, order_id, item_code)
 
 

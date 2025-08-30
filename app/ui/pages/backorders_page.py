@@ -615,7 +615,8 @@ class BackordersPage(QWidget):
         if current_qty <= 1:
             # Son adet - direkt tamamla
             try:
-                mark_fulfilled(item_id)
+                # qty_scanned parametresi ile çağır (1 adet okutuldu)
+                mark_fulfilled(item_id, qty_scanned=1.0)
                 # Sessizce tamamla - uyarı verme
                 self._smart_refresh_after_item_completion(item_id)
             except Exception as exc:
@@ -701,7 +702,8 @@ class BackordersPage(QWidget):
         for row in rows:
             item = self.selected_items[row]
             try:
-                mark_fulfilled(item["id"])
+                # Tüm eksik miktarı okutulmuş say
+                mark_fulfilled(item["id"], qty_scanned=item.get("qty_missing", 1))
                 completed_item_ids.append(item["id"])
                 ok += 1
             except Exception as exc:

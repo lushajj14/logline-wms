@@ -745,12 +745,18 @@ class ScannerPage(QWidget):
                 SELECT 
                     oh.FICHENO as order_no,
                     oh.DATE_ as order_date,
-                    COUNT(DISTINCT ol.STOCKREF) as item_count,
+                    COUNT(DISTINCT CASE WHEN ol.CANCELLED = 0 AND ol.STOCKREF > 0 AND ol.AMOUNT > 0 THEN ol.STOCKREF END) as item_count,
                     COALESCE(sh.pkgs_total, 0) as packages,
                     oh.STATUS,
+                    -- Gerçek tamamlanma oranı (shipment_lines'dan)
                     CASE 
-                        WHEN SUM(ol.AMOUNT) = 0 THEN 0
-                        ELSE (SUM(ol.SHIPPEDAMOUNT) / SUM(ol.AMOUNT) * 100)
+                        WHEN SUM(CASE WHEN ol.CANCELLED = 0 THEN ol.AMOUNT ELSE 0 END) = 0 THEN 100
+                        ELSE (
+                            CAST(ISNULL((SELECT SUM(sl.qty_sent) 
+                                        FROM shipment_lines sl
+                                        WHERE sl.order_no = oh.FICHENO), 0) as FLOAT) / 
+                            CAST(SUM(CASE WHEN ol.CANCELLED = 0 THEN ol.AMOUNT ELSE 0 END) as FLOAT) * 100
+                        )
                     END as completion_rate
                 FROM {_t('ORFICHE')} oh
                 LEFT JOIN {_t('ORFLINE')} ol ON oh.LOGICALREF = ol.ORDFICHEREF
@@ -788,16 +794,19 @@ class ScannerPage(QWidget):
                     item_count = str(row_data['item_count'])
                     packages = str(row_data['packages']) if row_data.get('packages') else "0"
                     
-                    # Durum belirle
+                    # Durum belirle - önce completion'a bak
                     completion = float(row_data['completion_rate']) if row_data.get('completion_rate') else 0
                     status_value = row_data.get('STATUS', 2)  # Varsayılan 2 (işlemde)
-                    if status_value == 4:
-                        if completion >= 99:
-                            status = "✅ Tamamlandı"
-                        else:
-                            status = "⚠️ Eksik"
+                    
+                    # Completion öncelikli
+                    if completion >= 99:
+                        status = "✅ Tamamlandı"
+                    elif status_value == 4 and completion < 99:
+                        status = "⚠️ Eksik Kapatıldı"
+                    elif completion > 0:
+                        status = f"🔄 İşlemde (%{completion:.0f})"
                     else:
-                        status = "🔄 İşlemde"
+                        status = "⏳ Bekliyor"
                     
                     self.history_table.setItem(row, 0, QTableWidgetItem(order_no))
                     self.history_table.setItem(row, 1, QTableWidgetItem(order_date))
@@ -1055,20 +1064,53 @@ class ScannerPage(QWidget):
             
             query = f"""
                 SELECT 
-                    st.CODE as item_code,
-                    st.NAME as item_name,
+                    ISNULL(st.CODE, 'UNKNOWN-' + CAST(ol.STOCKREF as VARCHAR)) as item_code,
+                    ISNULL(st.NAME, 'Ürün Bulunamadı') as item_name,
                     ol.AMOUNT as qty_ordered,
-                    ol.SHIPPEDAMOUNT as qty_sent,
+                    -- Gönderilen: sadece shipment_lines'dan al (backorder fulfilled olanlar zaten oraya yazılıyor)
+                    CAST(
+                        ISNULL((SELECT SUM(qty_sent) 
+                                FROM shipment_lines 
+                                WHERE order_no = oh.FICHENO 
+                                  AND item_code = st.CODE), 0)
+                    as INT) as qty_sent,
                     CASE 
-                        WHEN ol.SHIPPEDAMOUNT >= ol.AMOUNT THEN '✅ Tamamlandı'
-                        WHEN ol.SHIPPEDAMOUNT > 0 THEN '⚠️ ' + CAST(CAST(ol.AMOUNT - ol.SHIPPEDAMOUNT as INT) as VARCHAR) + ' Eksik'
-                        ELSE '❌ Hiç Taranmadı'
+                        -- Gönderilen miktar tam ise
+                        WHEN ISNULL((SELECT SUM(qty_sent) 
+                                    FROM shipment_lines 
+                                    WHERE order_no = oh.FICHENO 
+                                      AND item_code = st.CODE), 0) >= ol.AMOUNT
+                        THEN '✅ Tamamlandı'
+                        
+                        -- Sipariş kapatıldı ama eksik var
+                        WHEN oh.STATUS = 4 AND 
+                             ISNULL((SELECT SUM(qty_sent) 
+                                    FROM shipment_lines 
+                                    WHERE order_no = oh.FICHENO 
+                                      AND item_code = st.CODE), 0) < ol.AMOUNT
+                        THEN '⚠️ Eksik Kapatıldı (' + 
+                             CAST(CAST(ol.AMOUNT - ISNULL((SELECT SUM(qty_sent) 
+                                                           FROM shipment_lines 
+                                                           WHERE order_no = oh.FICHENO 
+                                                             AND item_code = st.CODE), 0) as INT) as VARCHAR) + ' eksik)'
+                        
+                        -- Kısmen gönderilmiş
+                        WHEN ISNULL((SELECT SUM(qty_sent) 
+                                    FROM shipment_lines 
+                                    WHERE order_no = oh.FICHENO 
+                                      AND item_code = st.CODE), 0) > 0
+                        THEN '🔄 Kısmen Gönderildi'
+                        
+                        -- Hiç gönderilmemiş
+                        ELSE '❌ Bekliyor'
                     END as status
                 FROM {_t('ORFICHE')} oh
                 INNER JOIN {_t('ORFLINE')} ol ON oh.LOGICALREF = ol.ORDFICHEREF
-                LEFT JOIN {_t('ITEMS')} st ON ol.STOCKREF = st.LOGICALREF
+                LEFT JOIN {_t('ITEMS', period_dependent=False)} st ON ol.STOCKREF = st.LOGICALREF
                 WHERE oh.FICHENO = ?
-                ORDER BY ol.LINENR
+                  AND ol.AMOUNT > 0
+                  AND ol.CANCELLED = 0
+                ORDER BY ol.LINENO_
             """
             
             results = fetch_all(query, order_no)
@@ -1082,10 +1124,9 @@ class ScannerPage(QWidget):
                 pkg_result = fetch_one(pkg_query, order_no)
                 packages = pkg_result['pkgs_total'] if pkg_result else 0
                 
-                # Operatör bilgisini al (WMS_PICKQUEUE'dan)
-                op_query = "SELECT TOP 1 username FROM WMS_PICKQUEUE WHERE order_no = ?"
-                op_result = fetch_one(op_query, order_no)
-                operator = op_result['username'] if op_result else "Bilinmiyor"
+                # Operatör bilgisi şimdilik bilinmiyor olarak işaretle
+                # (WMS_PICKQUEUE'da username kolonu yok)
+                operator = "Bilinmiyor"
                 
                 return {
                     "items": items,
@@ -1836,7 +1877,7 @@ class ScannerPage(QWidget):
                     CODE, NAME, 
                     ONHAND, RESERVED, AVAILABLE,
                     UNIT1, UNIT2, UNIT3
-                FROM {_t('ITEMS')} 
+                FROM {_t('ITEMS', period_dependent=False)} 
                 WHERE CODE = ?
             """
             stock = fetch_one(stock_query, code)
@@ -2159,9 +2200,9 @@ class ScannerPage(QWidget):
                 try:
                     error_query = """
                         SELECT COUNT(*) as error_count
-                        FROM activity_log 
-                        WHERE activity_type IN ('INVALID_SCAN', 'OVER_SCAN')
-                          AND activity_time >= DATEADD(DAY, -7, GETDATE())
+                        FROM USER_ACTIVITY 
+                        WHERE action IN ('INVALID_SCAN', 'OVER_SCAN')
+                          AND event_time >= DATEADD(DAY, -7, GETDATE())
                     """
                     error_result = fetch_one(error_query)
                     error_count = error_result.get('error_count', 0) if error_result else 0
@@ -2170,8 +2211,8 @@ class ScannerPage(QWidget):
                     # Aktif kullanıcılar
                     user_query = """
                         SELECT COUNT(DISTINCT username) as active_users
-                        FROM activity_log
-                        WHERE activity_time >= DATEADD(DAY, -1, GETDATE())
+                        FROM USER_ACTIVITY
+                        WHERE event_time >= DATEADD(DAY, -1, GETDATE())
                     """
                     user_result = fetch_one(user_query)
                     active_users = user_result.get('active_users', 0) if user_result else 0
