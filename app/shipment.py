@@ -115,6 +115,13 @@ def _create_tables() -> None:
                      AND Object_ID = Object_ID('{SCHEMA}.shipment_loaded'))
         ALTER TABLE {SCHEMA}.shipment_loaded
             ADD loaded_time DATETIME NULL;
+    
+    /* pkgs_original kolonu - ilk paket sayısını tutar */
+    IF NOT EXISTS (SELECT * FROM sys.columns
+                   WHERE Name='pkgs_original'
+                     AND Object_ID = Object_ID('{SCHEMA}.shipment_header'))
+        ALTER TABLE {SCHEMA}.shipment_header
+            ADD pkgs_original INT NULL;
     """
     with get_conn(autocommit=True) as cn:
         cn.execute(ddl)
@@ -160,11 +167,13 @@ def upsert_header(
                    region = ?,
                    address1 = ?,
                    closed = 0,
-                   invoice_root = COALESCE(tgt.invoice_root, ?)
+                   invoice_root = COALESCE(tgt.invoice_root, ?),
+                   /* İlk paket sayısını koru (değişmemişse) */
+                   pkgs_original = COALESCE(tgt.pkgs_original, ?)
     WHEN NOT MATCHED THEN
-        INSERT (trip_date, order_no, pkgs_total,
+        INSERT (trip_date, order_no, pkgs_total, pkgs_original,
                 customer_code, customer_name, region, address1, invoice_root)
-        VALUES (?,?,?,?,?,?,?,?);
+        VALUES (?,?,?,?,?,?,?,?,?);
     """
 
     if conn:
@@ -175,9 +184,9 @@ def upsert_header(
             # ---------- src ----------
             trip_date, order_no,
             # ---------- UPDATE ----------
-            pkgs_total, customer_code, customer_name, region, address1, invoice_root,
+            pkgs_total, customer_code, customer_name, region, address1, invoice_root, pkgs_total,
             # ---------- INSERT ----------
-            trip_date, order_no, pkgs_total,
+            trip_date, order_no, pkgs_total, pkgs_total,  # pkgs_original = pkgs_total (ilk kayıt)
             customer_code, customer_name, region, address1, invoice_root
         )
 
@@ -209,9 +218,9 @@ def upsert_header(
                 # ---------- src ----------
                 trip_date, order_no,
                 # ---------- UPDATE ----------
-                pkgs_total, customer_code, customer_name, region, address1, invoice_root,
+                pkgs_total, customer_code, customer_name, region, address1, invoice_root, pkgs_total,
                 # ---------- INSERT ----------
-                trip_date, order_no, pkgs_total,
+                trip_date, order_no, pkgs_total, pkgs_total,  # pkgs_original = pkgs_total (ilk kayıt)
                 customer_code, customer_name, region, address1, invoice_root
             )
 

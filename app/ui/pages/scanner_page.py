@@ -747,6 +747,7 @@ class ScannerPage(QWidget):
                     oh.DATE_ as order_date,
                     COUNT(DISTINCT CASE WHEN ol.CANCELLED = 0 AND ol.STOCKREF > 0 AND ol.AMOUNT > 0 THEN ol.STOCKREF END) as item_count,
                     COALESCE(sh.pkgs_total, 0) as packages,
+                    COALESCE(sh.pkgs_original, sh.pkgs_total) as packages_original,
                     oh.STATUS,
                     -- Gerçek tamamlanma oranı (shipment_lines'dan)
                     CASE 
@@ -773,7 +774,7 @@ class ScannerPage(QWidget):
                 base_query += " AND oh.CANCELLED = 1"
             
             base_query += """
-                GROUP BY oh.FICHENO, oh.DATE_, sh.pkgs_total, oh.STATUS
+                GROUP BY oh.FICHENO, oh.DATE_, sh.pkgs_total, sh.pkgs_original, oh.STATUS
                 ORDER BY oh.DATE_ DESC
                 OFFSET 0 ROWS FETCH NEXT 50 ROWS ONLY
             """
@@ -793,6 +794,7 @@ class ScannerPage(QWidget):
                     order_date = row_data['order_date'].strftime("%d.%m.%Y %H:%M") if row_data.get('order_date') else ""
                     item_count = str(row_data['item_count'])
                     packages = str(row_data['packages']) if row_data.get('packages') else "0"
+                    packages_original = str(row_data.get('packages_original', packages))
                     
                     # Durum belirle - önce completion'a bak
                     completion = float(row_data['completion_rate']) if row_data.get('completion_rate') else 0
@@ -812,14 +814,21 @@ class ScannerPage(QWidget):
                     self.history_table.setItem(row, 1, QTableWidgetItem(order_date))
                     self.history_table.setItem(row, 2, QTableWidgetItem(item_count))
                     
-                    # Paket gösterimi
-                    package_item = QTableWidgetItem(f"📦 {packages}")
-                    if "Eksik" in status:
-                        package_item.setBackground(QColor("#FFF3E0"))
-                    elif "Tamamlandı" in status:
-                        package_item.setBackground(QColor("#E8F5E8"))
+                    # Paket gösterimi - değişiklik varsa göster
+                    if packages != packages_original:
+                        package_text = f"📦 {packages} (ilk: {packages_original})"
+                        package_item = QTableWidgetItem(package_text)
+                        package_item.setToolTip(f"Paket sayısı değişti: {packages_original} → {packages}")
+                        # Değişiklik varsa sarı arka plan
+                        package_item.setBackground(QColor("#FFF3CD"))
                     else:
-                        package_item.setBackground(QColor("#F0F7FF"))
+                        package_item = QTableWidgetItem(f"📦 {packages}")
+                        if "Eksik" in status:
+                            package_item.setBackground(QColor("#FFF3E0"))
+                        elif "Tamamlandı" in status:
+                            package_item.setBackground(QColor("#E8F5E8"))
+                        else:
+                            package_item.setBackground(QColor("#F0F7FF"))
                     
                     self.history_table.setItem(row, 3, package_item)
                     self.history_table.setItem(row, 4, QTableWidgetItem(status))
