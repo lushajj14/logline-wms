@@ -5,7 +5,7 @@
 • "Liste Yazdır (QR)" butonu: sevkiyat başlığına `qr_token` üretir, QR kodlu PDF oluşturur.
 """
 from __future__ import annotations
-import csv, os, io, uuid, getpass
+import csv, os, io, uuid, getpass, sys
 from pathlib import Path
 from datetime import date, datetime
 from typing import Dict, List
@@ -37,14 +37,18 @@ from app.shipment import (
     mark_loaded, set_trip_closed
 )
 from app.dao.logo import exec_sql, ensure_qr_token, fetch_all, fetch_one
-BASE_DIR = Path(__file__).resolve().parents[3]
-# Fix: Export dir fallback ve safer path handling
-try:
-    export_base = Path(settings.get("paths.export_dir", BASE_DIR / "output"))
-    OUTPUT_DIR = export_base / "output"
-except Exception:
-    OUTPUT_DIR = BASE_DIR / "output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Use WMS paths instead of relative to file
+from app.utils.wms_paths import get_wms_folders
+wms_folders = get_wms_folders()
+OUTPUT_DIR = wms_folders['output']
+
+# For sounds, use resource path (handles frozen exe)
+if getattr(sys, 'frozen', False):
+    # In frozen exe, use _MEIPASS for resources
+    BASE_DIR = Path(sys._MEIPASS)
+else:
+    BASE_DIR = Path(__file__).resolve().parents[3]
 
 SOUND_DIR = BASE_DIR / "sounds"
 

@@ -49,9 +49,11 @@ DEFAULTS: Dict[str, Any] = {
         "heartbeat": 10
     },
     "paths": {
-        "label_dir":  str(Path.home() / "Documents" / "Yönetim" / "labels"),
-        "export_dir": str(Path.home() / "Desktop"),
-        "log_dir":    str(LOG_DIR_DEFAULT),
+        "label_dir":  str(Path.home() / "Documents" / "WMS" / "labels"),
+        "export_dir": str(Path.home() / "Documents" / "WMS" / "exports"),
+        "picklist_dir": str(Path.home() / "Documents" / "WMS" / "picklists"),
+        "report_dir": str(Path.home() / "Documents" / "WMS" / "reports"),
+        "log_dir":    str(Path.home() / "Documents" / "WMS" / "logs"),
         "font_dir": str(BASE_DIR / "fonts")
     },
     "print": {

@@ -22,6 +22,14 @@ from app.config.validate_env import run_validation
 if not run_validation(exit_on_error=True):
     sys.exit("Environment validation failed. Please check your configuration.")
 
+# Initialize WMS folder structure
+try:
+    from app.utils.wms_paths import ensure_wms_structure
+    wms_folders = ensure_wms_structure()
+    print(f"WMS folders initialized at: {wms_folders['base']}")
+except Exception as e:
+    print(f"Warning: Could not initialize WMS folders: {e}")
+
 # ──────────────────────────────────────────────────────────
 # 1) 4K / yüksek-DPI ekran desteği
 # ──────────────────────────────────────────────────────────
@@ -58,8 +66,11 @@ app.setFont(base_font)
 # ──────────────────────────────────────────────────────────
 # 4) Küresel (uncaught) hata yakalayıcı → MessageBox + log
 # ──────────────────────────────────────────────────────────
-LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+# Use WMS logs directory
+from app.utils.wms_paths import get_wms_folders
+wms_folders = get_wms_folders()
+LOG_DIR = wms_folders['logs']
+
 logging.basicConfig(
     filename = LOG_DIR / "crash.log",
     level    = logging.ERROR,

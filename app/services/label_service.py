@@ -26,6 +26,8 @@ LABEL_OUT_DIR (default: ./labels)
 """
 from __future__ import annotations
 
+__all__ = ['make_labels']
+
 import os
 import sys
 import re
@@ -44,34 +46,67 @@ import pyodbc
 try:
     from app.dao import logo as dao
     from app import settings as st
-except ModuleNotFoundError:
-    import dao.logo as dao
-    st = None  # settings yoksa env var kullan
+except (ModuleNotFoundError, ImportError):
+    try:
+        import dao.logo as dao
+        st = None  # settings yoksa env var kullan
+    except (ModuleNotFoundError, ImportError):
+        # PyInstaller frozen executable için
+        import sys
+        if hasattr(sys, '_MEIPASS'):
+            # Frozen modda çalışıyoruz
+            from dao import logo as dao
+            st = None
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
 
 # ---------------------------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Determine base directory based on execution mode
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller executable
+    BASE_DIR = Path(sys._MEIPASS)
+else:
+    # Running in development
+    BASE_DIR = Path(__file__).resolve().parent.parent
+
 COMPANY_TEXT = "CAN OTOMOTIV"
 PAGE_SIZE    = (100*mm, 100*mm)
-# Settings'ten label directory al ve otomatik oluştur
-if st:
-    LABEL_DIR = Path(st.get("paths.label_dir", str(Path.home() / "Documents" / "Yönetim" / "labels")))
-else:
-    LABEL_DIR = Path(os.getenv("LABEL_OUT_DIR", str(Path.home() / "Documents" / "Yönetim" / "labels")))
 
-# Etiket klasörünü otomatik oluştur
-LABEL_DIR.mkdir(parents=True, exist_ok=True)
-OUT_DIR = LABEL_DIR
-
-FONT_PATH = os.getenv("FONT_PATH", str(BASE_DIR/"fonts"/"DejaVuSans.ttf"))
-
+# Use centralized WMS path management
 try:
-    pdfmetrics.registerFont(TTFont("DejaVu", FONT_PATH))
-    FONT_NAME = "DejaVu"
-except Exception:
-    logging.warning("DejaVuSans.ttf bulunamadı; Helvetica kullanılacak")
-    FONT_NAME = "Helvetica"
+    from app.utils.wms_paths import get_label_path, get_wms_folders
+    wms_folders = get_wms_folders()
+    LABEL_DIR = wms_folders['labels']
+    OUT_DIR = LABEL_DIR
+except ImportError:
+    # Fallback if wms_paths not available
+    LABEL_DIR = Path.home() / "Documents" / "WMS" / "labels"
+    LABEL_DIR.mkdir(parents=True, exist_ok=True)
+    OUT_DIR = LABEL_DIR
+
+# Try multiple font paths
+font_paths = [
+    str(BASE_DIR / "app" / "fonts" / "DejaVuSans.ttf"),
+    str(BASE_DIR / "fonts" / "DejaVuSans.ttf"),
+    os.getenv("FONT_PATH", ""),
+    str(Path(__file__).resolve().parent.parent / "fonts" / "DejaVuSans.ttf"),
+    str(Path(__file__).resolve().parent.parent / "app" / "fonts" / "DejaVuSans.ttf"),
+]
+
+FONT_NAME = "Helvetica"  # Default fallback
+for font_path in font_paths:
+    if font_path and Path(font_path).exists():
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVu", font_path))
+            FONT_NAME = "DejaVu"
+            logging.info(f"Font loaded from: {font_path}")
+            break
+        except Exception as e:
+            logging.warning(f"Could not load font from {font_path}: {e}")
+            continue
+
+if FONT_NAME == "Helvetica":
+    logging.warning("DejaVuSans.ttf not found; using Helvetica (Turkish characters may not display correctly)")
 
 # ---------------------------------------------------------------------------
 def get_current_user_first_name() -> str:
@@ -227,8 +262,17 @@ def make_labels(order_no: str, *, force: bool = False, footer: str = ""):
     barkod_root = invoice_no or order_no           # ← temel kısım
     pkg_tot     = parse_int(hdr.get("genexp4", "1"))
 
-    pdf_path = OUT_DIR / f"LABEL_{dt.datetime.now():%Y%m%d_%H%M%S}_{order_no}.pdf"
-    c = canvas.Canvas(str(pdf_path), pagesize=PAGE_SIZE)
+    # Ensure safe filename (remove any path separators)
+    safe_order_no = order_no.replace('/', '_').replace('\\', '_')
+    pdf_filename = f"LABEL_{dt.datetime.now():%Y%m%d_%H%M%S}_{safe_order_no}.pdf"
+    pdf_path = OUT_DIR / pdf_filename
+    
+    # Ensure directory exists
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Convert to string with forward slashes
+    pdf_path_str = str(pdf_path).replace('\\', '/')
+    c = canvas.Canvas(pdf_path_str, pagesize=PAGE_SIZE)
 
     # — adres satırlarını kır —
     adres_raw   = (hdr.get("adres", "").upper()).split()

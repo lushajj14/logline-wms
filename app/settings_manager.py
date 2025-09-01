@@ -16,16 +16,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Determine base directory
+# Always use WMS directory for settings, never exe directory
+WMS_DIR = Path.home() / "Documents" / "WMS"
+WMS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Primary settings location - always in WMS folder
+SETTINGS_FILE = WMS_DIR / "settings.json"
+
+# Alternative user settings location - same as primary
+USER_SETTINGS_FILE = WMS_DIR / "settings.json"
+
+# Base directory for relative paths (not for settings storage)
 if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).parent
-    SETTINGS_FILE = BASE_DIR / "settings.json"
+    BASE_DIR = Path(sys._MEIPASS)  # Use PyInstaller temp directory
 else:
     BASE_DIR = Path(__file__).resolve().parents[2]
-    SETTINGS_FILE = BASE_DIR / "settings.json"
-
-# Alternative user settings location
-USER_SETTINGS_FILE = Path.home() / ".wms_settings" / "settings.json"
 
 # Default settings structure
 DEFAULTS: Dict[str, Any] = {
@@ -67,9 +72,11 @@ DEFAULTS: Dict[str, Any] = {
     },
     "paths": {
         "label_dir": str(Path.home() / "Documents" / "WMS" / "labels"),
-        "export_dir": str(Path.home() / "Desktop"),
-        "log_dir": str(Path.home() / "WMS" / "logs"),
-        "backup_dir": str(Path.home() / "WMS" / "backups"),
+        "export_dir": str(Path.home() / "Documents" / "WMS" / "exports"),
+        "picklist_dir": str(Path.home() / "Documents" / "WMS" / "picklists"),
+        "report_dir": str(Path.home() / "Documents" / "WMS" / "reports"),
+        "log_dir": str(Path.home() / "Documents" / "WMS" / "logs"),
+        "backup_dir": str(Path.home() / "Documents" / "WMS" / "backups"),
         "font_dir": str(BASE_DIR / "fonts")
     },
     "print": {

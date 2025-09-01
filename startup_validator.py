@@ -23,8 +23,8 @@ def validate_startup_config():
         reset_to_defaults()
         return True
     
-    # Load settings
-    settings_file = Path.home() / "Desktop" / "settings.json"
+    # Load settings from WMS directory
+    settings_file = Path.home() / "Documents" / "WMS" / "settings.json"
     
     if not settings_file.exists():
         # No settings file, will use .env defaults
