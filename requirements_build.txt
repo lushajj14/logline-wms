@@ -1,0 +1,47 @@
+# Build requirements for Python 3.13
+# Uses compatible versions that work with Python 3.13
+
+# Core PyQt5 Dependencies - Using latest compatible
+PyQt5
+PyQt5-Qt5
+PyQt5-sip
+
+# Database Dependencies
+pyodbc
+
+# Data Processing - Already installed latest
+pandas
+numpy  
+openpyxl
+xlrd
+
+# Environment & Configuration
+python-dotenv
+
+# QR Code & Barcode Generation
+qrcode[pil]
+Pillow
+
+# PDF Generation
+reportlab
+
+# Web Framework (API)
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Security & Authentication
+python-jose[cryptography]
+bcrypt
+cryptography
+
+# Build Tool
+pyinstaller
+
+# Additional Dependencies
+altgraph
+pefile
+pywin32-ctypes
+packaging
+setuptools
+wheel

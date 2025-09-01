@@ -231,6 +231,81 @@ print(result['message'])
    - Batch işlemler için transaction
    - Index'ler order_no ve item_code üzerinde
 
+## 🏗️ Build ve Derleme (PyInstaller)
+
+### Tek EXE Oluşturma
+```batch
+pyinstaller --clean --noconfirm wms.spec
+```
+
+### Önemli Build Konfigürasyonları
+
+#### 1. Dosya Yolları ve WMS Klasör Yapısı
+- **TÜM dosyalar** `C:\Users\[Kullanıcı]\Documents\WMS\` altında oluşturulur
+- EXE yanında klasör oluşturulmaz, sadece Documents/WMS kullanılır
+```
+Documents/WMS/
+├── labels/          # Etiketler
+├── picklists/       # Sevkiyat listeleri  
+├── reports/         # Raporlar
+├── exports/         # Dışa aktarmalar
+├── logs/            # Log dosyaları
+├── backups/         # Yedekler
+├── temp/            # Geçici dosyalar
+└── settings.json    # Ayarlar
+```
+
+#### 2. Kritik Import Düzeltmeleri
+- `app.utils.wms_paths` modülünde `get_resource_path()` fonksiyonu eklendi
+- `loader_page.py`'ye `sys` import eklendi
+- Tüm reportlab barcode modülleri wms.spec'e eklendi:
+  - code128, code93, code39, common, dmtx
+  - eanbc, ecc200datamatrix, fourstate, lto
+  - qr, qrencoder, usps, **usps4s**, widgets
+
+#### 3. wms.spec Konfigürasyonu
+- 100+ hidden import tanımlı
+- Font dosyaları: DejaVuSans.ttf dahil
+- Ses dosyaları: .wav dosyaları dahil
+- .env dosyası otomatik dahil edilir
+- collect_submodules ile tüm app modülleri toplanır
+
+#### 4. Path Yönetimi Düzeltmeleri
+```python
+# main.py - WMS logs kullanımı
+from app.utils.wms_paths import get_wms_folders
+wms_folders = get_wms_folders()
+LOG_DIR = wms_folders['logs']
+
+# settings_manager.py - Sabit WMS dizini
+WMS_DIR = Path.home() / "Documents" / "WMS"
+SETTINGS_FILE = WMS_DIR / "settings.json"
+
+# build_config.py - Documents/WMS kullanımı
+wms_dir = Path.home() / "Documents" / "WMS"
+```
+
+### Build Sorun Giderme
+
+#### Python 3.13 Uyumluluk
+- pandas ve numpy için sabit sürüm yerine latest kullan
+- PyQt5-sip wheel sorunları için pip upgrade gerekli
+
+#### Font ve Türkçe Karakter Desteği
+- Tüm PDF servislerinde çoklu font path denemesi
+- Frozen mode desteği (`sys._MEIPASS`)
+- Helvetica fallback sistemi
+
+#### Eksik Modül Hataları
+- wms.spec hiddenimports listesine modül ekle
+- collect_submodules kullan
+- `__all__` export listesi ekle
+
+### Dağıtım Gereksinimleri
+1. .env dosyası exe yanında olmalı
+2. ODBC Driver 17 for SQL Server kurulu olmalı
+3. Visual C++ Redistributable 2015-2022 gerekebilir
+
 ## 📞 İletişim ve Destek
 
 Sorun durumunda kontrol edilecekler:
@@ -238,7 +313,10 @@ Sorun durumunda kontrol edilecekler:
 2. SQL Server bağlantısı var mı?
 3. Tablolar oluşturulmuş mu?
 4. Logo ERP STATUS değerleri doğru mu?
+5. Documents/WMS klasörü oluşturuldu mu?
+6. Tüm bağımlılıklar exe'ye dahil edildi mi?
 
 ---
-*Son güncelleme: 2025-08-30*
+*Son güncelleme: 2025-09-01*
 *WMS Version: 2.0*
+*Build System: PyInstaller 6.15.0*
