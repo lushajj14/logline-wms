@@ -8,7 +8,7 @@ from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 import logging
 import bcrypt
-from app.dao.logo import fetch_one, fetch_all, execute_query
+from app.dao.logo import fetch_one, fetch_all, execute_query, get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -223,40 +223,60 @@ class UserDAO:
             Başarılıysa yeni kullanıcı ID'si
         """
         try:
-            # Kullanıcıyı ekle
-            result = fetch_one(
-                """
-                INSERT INTO WMS_KULLANICILAR (
-                    KULLANICI_ADI, 
-                    EMAIL, 
-                    SIFRE_HASH, 
-                    AD_SOYAD, 
-                    ROL,
-                    AKTIF
+            # Tek transaction'da hem kullanıcı oluştur hem aktivite logla
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                
+                # Kullanıcıyı ekle
+                cursor.execute(
+                    """
+                    INSERT INTO WMS_KULLANICILAR (
+                        KULLANICI_ADI, 
+                        EMAIL, 
+                        SIFRE_HASH, 
+                        AD_SOYAD, 
+                        ROL,
+                        AKTIF,
+                        OLUSTURMA_TARIHI,
+                        GUNCELLEME_TARIHI
+                    )
+                    OUTPUT INSERTED.LOGICALREF
+                    VALUES (?, ?, ?, ?, ?, ?, GETDATE(), GETDATE())
+                    """,
+                    [
+                        user_data['username'],
+                        user_data.get('email', ''),
+                        user_data.get('password_hash', ''),  # UI'dan hash'lenmiş geliyor
+                        user_data.get('full_name', ''),
+                        user_data.get('role', 'operator'),
+                        user_data.get('is_active', True)
+                    ]
                 )
-                OUTPUT INSERTED.LOGICALREF
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    user_data['username'],
-                    user_data['email'],
-                    user_data.get('password_hash', ''),
-                    user_data['full_name'],
-                    user_data.get('role', 'operator'),
-                    user_data.get('is_active', True)
-                ]
-            )
-            
-            if result:
-                user_id = result['logicalref']
+                
+                result = cursor.fetchone()
+                if not result:
+                    return None
+                
+                user_id = result[0]  # OUTPUT INSERTED.LOGICALREF
                 logger.info(f"User created: {user_data['username']} (ID: {user_id})")
                 
-                # Aktiviteyi logla
-                self.log_activity(user_id, 'user_created', 'users', f'User {user_data['username']} created')
+                # Aynı transaction'da aktiviteyi logla
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO WMS_KULLANICI_AKTIVITELERI 
+                        (KULLANICI_REF, AKTIVITE, MODUL, DETAY, IP_ADRESI)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        [user_id, 'user_created', 'users', f"User {user_data['username']} created", None]
+                    )
+                except Exception as log_error:
+                    logger.warning(f"Could not log activity for user creation: {log_error}")
+                    # Aktivite loglanamasa bile kullanıcı oluşturulacak
                 
+                # Transaction'ı commit et
+                conn.commit()
                 return user_id
-            
-            return None
             
         except Exception as e:
             logger.error(f"Error creating user: {e}")
@@ -305,7 +325,7 @@ class UserDAO:
             rows = execute_query(query, values)
             
             if rows > 0:
-                self.log_activity(user_id, 'user_updated', 'users', f'User updated: {list(user_data.keys())}')
+                self.log_activity(user_id, 'user_updated', 'users', f"User updated: {list(user_data.keys())}")
                 return True
                 
             return False

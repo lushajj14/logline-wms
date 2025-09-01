@@ -65,9 +65,13 @@ class UserManagementPage(QWidget):
         self.btn_refresh.clicked.connect(self._load_users)
         header_layout.addWidget(self.btn_refresh)
         
-        # Add user button
+        # Add user button (sadece adminler görebilir)
         self.btn_add = QPushButton("➕ Yeni Kullanıcı")
         self.btn_add.clicked.connect(self._add_user)
+        # Rol kontrolü - sadece adminler kullanıcı ekleyebilir
+        if self.current_user and self.current_user.role != 'admin':
+            self.btn_add.setEnabled(False)
+            self.btn_add.setToolTip("Sadece adminler kullanıcı ekleyebilir")
         header_layout.addWidget(self.btn_add)
         
         layout.addLayout(header_layout)
@@ -267,12 +271,15 @@ class UserManagementPage(QWidget):
         if dialog.exec_():
             user_data = dialog.get_user_data()
             try:
-                self.dao.create_user(user_data)
-                QMessageBox.information(self, "Başarılı", "Kullanıcı eklendi!")
-                self._load_users()
-                self.user_updated.emit()
+                user_id = self.dao.create_user(user_data)
+                if user_id:
+                    QMessageBox.information(self, "Başarılı", f"Kullanıcı eklendi! (ID: {user_id})")
+                    self._load_users()
+                    self.user_updated.emit()
+                else:
+                    QMessageBox.critical(self, "Hata", "Kullanıcı oluşturulamadı. Lütfen tekrar deneyin.")
             except Exception as e:
-                QMessageBox.critical(self, "Hata", f"Kullanıcı eklenemedi:\n{str(e)}")
+                QMessageBox.critical(self, "Hata", f"Kullanıcı eklenemedi:\n{str(e)}\n\nDetay: Veritabanı bağlantısını kontrol edin.")
     
     def _edit_user(self, user: Dict):
         """Show edit user dialog."""

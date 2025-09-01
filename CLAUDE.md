@@ -156,6 +156,14 @@ os.environ["APP_DEBUG"] = "true"  # Enables detailed logging
 - JWT secret in API_SECRET environment variable
 - User passwords hashed with bcrypt
 - Mobile auth uses separate stored procedure
+- Role-based access control (admin, operator, viewer)
+
+## Recent Updates
+- Fixed user creation foreign key constraint errors
+- Implemented unified transaction management in users_new.py
+- Added role-based access control to user management
+- Fixed User object attribute access errors
+- Build system updated with remote config support
 
 ## Performance Tips
 - Connection pool: min=2, max=10 connections
@@ -164,4 +172,4 @@ os.environ["APP_DEBUG"] = "true"  # Enables detailed logging
 - Sound files preloaded to avoid delays
 
 ---
-*Last updated: 2025-09-01 - Full system operational with remote config*
+*Last updated: 2025-09-01 - Full system operational with RBAC and user management fixes*
