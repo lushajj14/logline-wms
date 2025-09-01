@@ -261,6 +261,10 @@ def fetch_draft_orders(*, limit: int = 100) -> List[Dict[str, Any]]:
         F.DATE_      AS order_date,
         F.STATUS,
         F.CYPHCODE   AS cyphcode,
+        F.GENEXP1    AS genexp1,
+        F.GENEXP2    AS genexp2,
+        F.GENEXP3    AS genexp3,
+        F.GENEXP4    AS genexp4,
         C.CODE       AS customer_code,
         C.DEFINITION_ AS customer_name
     FROM {_t('ORFICHE')} F
@@ -286,6 +290,10 @@ def fetch_picking_orders(limit: int = 100) -> List[Dict[str, Any]]:
         F.LOGICALREF  AS order_id,
         F.FICHENO     AS order_no,
         F.DATE_       AS order_date,
+        F.GENEXP1     AS genexp1,
+        F.GENEXP2     AS genexp2,
+        F.GENEXP3     AS genexp3,
+        F.GENEXP4     AS genexp4,
         C.CODE        AS customer_code,
         C.DEFINITION_ AS customer_name
     FROM { _t('ORFICHE') } F

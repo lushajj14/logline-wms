@@ -29,15 +29,56 @@ class EnvironmentConfig:
         Args:
             env_file: Path to .env file (optional)
         """
-        self.env_file = env_file or ".env"
+        # Determine the base directory
+        if getattr(sys, 'frozen', False):
+            # Running as PyInstaller executable
+            base_dir = Path(sys.executable).parent
+        else:
+            # Running in development
+            base_dir = Path(__file__).resolve().parent.parent.parent
+        
+        # Set env file path
+        if env_file:
+            self.env_file = env_file
+        else:
+            self.env_file = str(base_dir / ".env")
+        
         self.is_production = os.getenv("ENVIRONMENT", "development").lower() == "production"
         self.required_vars = {}
         self.optional_vars = {}
         
-        # Load .env file if exists (not in production)
-        if not self.is_production and Path(self.env_file).exists():
-            load_dotenv(self.env_file)
-            logger.info(f"Loaded environment from {self.env_file}")
+        # Try to load .env file from multiple locations
+        env_locations = [
+            self.env_file,
+            str(base_dir / ".env"),
+            ".env",
+            str(Path.cwd() / ".env")
+        ]
+        
+        env_loaded = False
+        for env_path in env_locations:
+            if Path(env_path).exists():
+                load_dotenv(env_path)
+                logger.info(f"Loaded environment from {env_path}")
+                env_loaded = True
+                break
+        
+        # Eğer .env bulunamazsa, remote config'i dene
+        if not env_loaded:
+            logger.warning("No .env file found, trying remote config...")
+            try:
+                from app.config.remote_config import RemoteConfigClient
+                client = RemoteConfigClient()
+                config = client.fetch_config(use_cache=True)
+                
+                if config:
+                    logger.info("Successfully loaded config from remote server")
+                    # Remote config zaten environment'a yüklendi
+                else:
+                    logger.warning("Remote config failed, using defaults")
+            except Exception as e:
+                logger.error(f"Remote config error: {e}")
+                logger.warning("No .env file found in any expected location")
     
     def require(self, key: str, description: str = "") -> str:
         """

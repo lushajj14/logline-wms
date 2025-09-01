@@ -48,24 +48,46 @@ from app.dao.logo import (
     _t,
 )
 from app.settings_manager import get_manager
+from app.utils.wms_paths import get_wms_folders, get_picklist_path
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
 
-# Font registration
-FONT_PATH = os.getenv("PICKLIST_FONT_PATH", str(BASE_DIR / "fonts" / "DejaVuSans.ttf"))
-if Path(FONT_PATH).exists():
-    pdfmetrics.registerFont(TTFont("DejaVuSans", FONT_PATH))
-    DEFAULT_FONT = "DejaVuSans"
+# Font registration - Determine base directory based on execution mode
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller executable
+    FONT_BASE_DIR = Path(sys._MEIPASS)
 else:
-    logger.warning("Unicode font not found (%s) - using Helvetica", FONT_PATH)
-    DEFAULT_FONT = "Helvetica"
+    # Running in development
+    FONT_BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Output directory from settings
-manager = get_manager()
-OUT_DIR = Path(manager.get("paths.label_dir", str(Path.home() / "Documents" / "WMS" / "picklists")))
-OUT_DIR = OUT_DIR.parent / "picklists"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Try multiple font paths
+font_paths = [
+    str(FONT_BASE_DIR / "app" / "fonts" / "DejaVuSans.ttf"),
+    str(FONT_BASE_DIR / "fonts" / "DejaVuSans.ttf"),
+    os.getenv("PICKLIST_FONT_PATH", ""),
+    str(Path(__file__).resolve().parent.parent / "fonts" / "DejaVuSans.ttf"),
+    str(Path(__file__).resolve().parent.parent / "app" / "fonts" / "DejaVuSans.ttf"),
+]
+
+DEFAULT_FONT = "Helvetica"  # Default fallback
+for font_path in font_paths:
+    if font_path and Path(font_path).exists():
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
+            DEFAULT_FONT = "DejaVuSans"
+            logger.info("Font loaded from: %s", font_path)
+            break
+        except Exception as e:
+            logger.warning("Could not load font from %s: %s", font_path, e)
+            continue
+
+if DEFAULT_FONT == "Helvetica":
+    logger.warning("DejaVuSans.ttf not found; using Helvetica (Turkish characters may not display correctly)")
+
+# Use centralized WMS path management
+wms_folders = get_wms_folders()
+OUT_DIR = wms_folders['picklists']
 
 # Styles
 styles = getSampleStyleSheet()
@@ -162,14 +184,23 @@ def create_enhanced_picklist_pdf(order: dict, lines: List[dict]) -> Path:
     
     ts = datetime.now()
     ts_str = ts.strftime("%Y%m%d_%H%M%S")
-    pdf_path = OUT_DIR / f"PICKLIST_{ts_str}_ORD{order['order_no']}.pdf"
+    
+    # Clean filename - remove problematic characters
+    order_no = str(order['order_no']).replace('/', '_').replace('\\', '_')
+    filename = f"PICKLIST_{ts_str}_ORD{order_no}.pdf"
+    
+    # Use centralized path management
+    pdf_path = get_picklist_path(filename)
+    
+    # Ensure directory exists
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
     
     doc = SimpleDocTemplate(
-        str(pdf_path), 
+        str(pdf_path).replace('\\', '/'), 
         pagesize=A4,
         topMargin=20*mm, 
         bottomMargin=25*mm,
-        title=f"Picklist - {order['order_no']}",
+        title=f"Picklist - {order_no}",
         author=get_current_user(),
     )
     
@@ -180,9 +211,19 @@ def create_enhanced_picklist_pdf(order: dict, lines: List[dict]) -> Path:
     elements.append(title)
     
     # Order info header
+    # Construct region string like in label_service.py
+    region = f"{order.get('genexp2', '')} - {order.get('genexp3', '')}".strip(" -")
+    
     order_info = f"""
     <b>Sipariş No:</b> {order['order_no']}<br/>
-    <b>Müşteri:</b> {order['customer_code']} - {order['customer_name']}<br/>
+    <b>Müşteri:</b> {order['customer_code']} - {order['customer_name']}<br/>"""
+    
+    # Add region if available
+    if region:
+        order_info += f"""
+    <b>Bölge:</b> {region}<br/>"""
+    
+    order_info += f"""
     <b>Tarih:</b> {order.get('order_date', ts).strftime('%d.%m.%Y') if hasattr(order.get('order_date', ts), 'strftime') else order.get('order_date', '')}<br/>
     <b>Hazırlayan:</b> {get_current_user()}<br/>
     <b>Hazırlanma:</b> {ts.strftime('%d.%m.%Y %H:%M')}
@@ -278,10 +319,16 @@ def create_daily_summary_pdf() -> Path:
     
     ts = datetime.now()
     ts_str = ts.strftime("%Y%m%d")
-    pdf_path = OUT_DIR / f"DAILY_SUMMARY_{ts_str}.pdf"
+    
+    # Use centralized path management
+    filename = f"DAILY_SUMMARY_{ts_str}.pdf"
+    pdf_path = get_picklist_path(filename)
+    
+    # Ensure directory exists
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
     
     doc = SimpleDocTemplate(
-        str(pdf_path),
+        str(pdf_path).replace('\\', '/'),
         pagesize=A4,
         topMargin=20*mm,
         bottomMargin=20*mm,
@@ -305,7 +352,8 @@ def create_daily_summary_pdf() -> Path:
                    O.DOCODE as customer_code,
                    O.NETTOTAL as total_amount,
                    O.GENEXP1 as notes,
-                   O.GENEXP2 as region
+                   O.GENEXP2 as genexp2,
+                   O.GENEXP3 as genexp3
             FROM {_t('ORFICHE')} O
             WHERE CAST(O.DATE_ AS DATE) = CAST(GETDATE() AS DATE)
             AND O.FICHENO LIKE 'S%2025%'
@@ -320,7 +368,8 @@ def create_daily_summary_pdf() -> Path:
                    DOCODE as customer_code,
                    NETTOTAL as total_amount,
                    GENEXP1 as notes,
-                   GENEXP2 as region
+                   GENEXP2 as genexp2,
+                   GENEXP3 as genexp3
             FROM {_t('ORFICHE')}
             WHERE FICHENO LIKE 'S%2025%'
             ORDER BY STATUS, FICHENO

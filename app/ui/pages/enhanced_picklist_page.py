@@ -11,9 +11,13 @@ Geliştirilmiş picklist sayfası:
 from __future__ import annotations
 import csv
 import sys
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import Dict, List, Set
+from functools import partial
+
+logger = logging.getLogger(__name__)
 
 from PyQt5.QtCore import Qt, QTimer, QDate, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -33,6 +37,7 @@ from app.dao.logo import (
     queue_delete,
     fetch_all,
     fetch_one,
+    get_conn,
     _t,
 )
 from app.services.enhanced_picklist import (
@@ -152,7 +157,12 @@ class EnhancedPicklistPage(QWidget):
         # Table settings
         self.tbl_orders.setAlternatingRowColors(True)
         self.tbl_orders.setSelectionBehavior(QTableWidget.SelectRows)
-        self.tbl_orders.setSortingEnabled(True)
+        self.tbl_orders.setSortingEnabled(False)  # Disable built-in sorting to preserve widgets
+        
+        # Custom sorting that preserves PDF buttons
+        self.tbl_orders.horizontalHeader().sectionClicked.connect(self._handle_column_sort)
+        self.sort_column = -1
+        self.sort_order = Qt.AscendingOrder
         
         # Set column widths for better visibility
         self.tbl_orders.setColumnWidth(0, 150)  # Sipariş No - wider for full visibility
@@ -285,12 +295,12 @@ class EnhancedPicklistPage(QWidget):
     def refresh_orders(self):
         """Refresh orders table."""
         try:
-            # Save current selection
-            selected_orders = []
+            # Save current selection by order_no (not row index)
+            selected_order_nos = set()
             for item in self.tbl_orders.selectedItems():
                 row = item.row()
-                if row < len(self.orders) and row not in [o[0] for o in selected_orders]:
-                    selected_orders.append((row, self.orders[row].get("order_no")))
+                if row < len(self.orders):
+                    selected_order_nos.add(self.orders[row].get("order_no"))
             
             # Get date range
             from_date = self.dt_from.date().toPyDate()
@@ -327,7 +337,8 @@ class EnhancedPicklistPage(QWidget):
                            F.DOCODE as customer_code,
                            C.DEFINITION_ as customer_name,
                            F.NETTOTAL as total_amount,
-                           F.GENEXP2 as region,
+                           F.GENEXP2 as genexp2,
+                           F.GENEXP3 as genexp3,
                            F.CLIENTREF as client_ref
                     FROM {_t('ORFICHE')} F
                     LEFT JOIN {_t('CLCARD', period_dependent=False)} C 
@@ -337,19 +348,18 @@ class EnhancedPicklistPage(QWidget):
                     ORDER BY F.LOGICALREF DESC
                 """)
             
-            # Update table
-            self.update_orders_table(orders)
+            # Get line counts for all orders BEFORE updating table
+            self._add_line_counts_to_orders(orders)
             
-            # Update line counts for all orders
-            self.update_line_counts()
+            # Update table (now with line counts included)
+            self.update_orders_table(orders)
             
             # Restore selection
             self.tbl_orders.clearSelection()
-            for _, order_no in selected_orders:
-                for row in range(self.tbl_orders.rowCount()):
-                    if row < len(self.orders) and self.orders[row].get("order_no") == order_no:
+            for row in range(self.tbl_orders.rowCount()):
+                if row < len(self.orders):
+                    if self.orders[row].get("order_no") in selected_order_nos:
                         self.tbl_orders.selectRow(row)
-                        break
             
             # Update status
             self.lbl_status.setText(f"{len(orders)} sipariş listelendi")
@@ -379,6 +389,50 @@ class EnhancedPicklistPage(QWidget):
                         item = self.tbl_orders.item(row, col)
                         if item:
                             item.setBackground(color)
+    
+    def _add_line_counts_to_orders(self, orders):
+        """Add line_count field to each order for proper sorting."""
+        if not orders:
+            return
+        
+        try:
+            # Get all order IDs
+            order_ids = [order["order_id"] for order in orders]
+            if not order_ids:
+                return
+            
+            # Single query to get all line counts
+            order_ids_str = ",".join(map(str, order_ids))
+            query = f"""
+                SELECT 
+                    L.ORDFICHEREF as order_id,
+                    COUNT(DISTINCT L.STOCKREF) as line_count
+                FROM {_t('ORFLINE')} L
+                WHERE L.ORDFICHEREF IN ({order_ids_str})
+                    AND L.CANCELLED = 0
+                    AND L.STOCKREF > 0
+                GROUP BY L.ORDFICHEREF
+            """
+            
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                
+                # Create lookup dictionary
+                line_counts = {}
+                for row in cursor:
+                    line_counts[row[0]] = row[1]
+            
+            # Add line_count to each order
+            for order in orders:
+                order_id = order["order_id"]
+                order['line_count'] = line_counts.get(order_id, 0)
+                
+        except Exception as e:
+            logger.error(f"Error adding line counts: {e}")
+            # Set default value on error
+            for order in orders:
+                order['line_count'] = 0
     
     def update_line_counts(self):
         """Update line counts for all displayed orders - OPTIMIZED VERSION."""
@@ -464,8 +518,9 @@ class EnhancedPicklistPage(QWidget):
             status_item = QTableWidgetItem(status)
             self.tbl_orders.setItem(row, 3, status_item)
             
-            # Line count (will be updated later)
-            self.tbl_orders.setItem(row, 4, QTableWidgetItem("?"))
+            # Line count - use value from order data
+            line_count = order.get('line_count', 0)
+            self.tbl_orders.setItem(row, 4, QTableWidgetItem(f"{line_count} kalem"))
             
             # Total
             total = order.get("total_amount", 0)
@@ -475,23 +530,68 @@ class EnhancedPicklistPage(QWidget):
                 total_str = "0.00 TL"
             self.tbl_orders.setItem(row, 5, QTableWidgetItem(total_str))
             
-            # Region - Remove KRD prefix if exists (e.g., "KRD-BOL1-GEREDE" -> "BOL1-GEREDE")
-            region_full = str(order.get("region", ""))
-            if region_full.startswith("KRD-"):
-                region = region_full[4:]  # Remove "KRD-" prefix (4 characters)
-            elif region_full.startswith("KRD "):
-                region = region_full[4:]  # Remove "KRD " prefix
-            else:
-                region = region_full  # Keep as is if no KRD prefix
+            # Region - Combine genexp2 and genexp3
+            region = f"{order.get('genexp2', '')} - {order.get('genexp3', '')}".strip(" -")
             self.tbl_orders.setItem(row, 6, QTableWidgetItem(region))
             
-            # Action button
+            # Action button - Use partial to avoid lambda closure bug
             btn_pdf = QPushButton("PDF")
-            btn_pdf.clicked.connect(lambda checked, o=order: self.create_single_pdf(o))
+            btn_pdf.clicked.connect(partial(self.create_single_pdf, order))
             self.tbl_orders.setCellWidget(row, 7, btn_pdf)
         
         # Apply row colors AFTER all rows are created (more efficient)
         self._apply_row_colors()
+        
+        # Ensure PDF buttons exist after table update
+        self._ensure_pdf_buttons()
+    
+    def _ensure_pdf_buttons(self):
+        """Ensure all rows have PDF buttons (fixes sorting/refresh issues)."""
+        for row in range(self.tbl_orders.rowCount()):
+            # Check if button already exists
+            if not self.tbl_orders.cellWidget(row, 7):
+                if row < len(self.orders):
+                    order = self.orders[row]
+                    btn_pdf = QPushButton("PDF")
+                    btn_pdf.clicked.connect(partial(self.create_single_pdf, order))
+                    self.tbl_orders.setCellWidget(row, 7, btn_pdf)
+    
+    def _handle_column_sort(self, logical_index):
+        """Custom sorting that preserves PDF buttons."""
+        # Skip sorting for the action column (PDF button column)
+        if logical_index == 7:
+            return
+        
+        # Toggle sort order if clicking same column
+        if self.sort_column == logical_index:
+            self.sort_order = Qt.DescendingOrder if self.sort_order == Qt.AscendingOrder else Qt.AscendingOrder
+        else:
+            self.sort_column = logical_index
+            self.sort_order = Qt.AscendingOrder
+        
+        # Get sort key based on column
+        def get_sort_key(order):
+            if logical_index == 0:  # Sipariş No
+                return order.get('order_no', '')
+            elif logical_index == 1:  # Müşteri
+                return order.get('customer_name', order.get('customer_code', ''))
+            elif logical_index == 2:  # Tarih
+                return order.get('order_date', '')
+            elif logical_index == 3:  # Durum
+                return order.get('status', 0)
+            elif logical_index == 4:  # Kalem
+                return order.get('line_count', 0)
+            elif logical_index == 5:  # Toplam
+                return order.get('total_amount', 0)
+            elif logical_index == 6:  # Bölge
+                return f"{order.get('genexp2', '')} - {order.get('genexp3', '')}".strip(" -")
+            return ''
+        
+        # Sort orders list
+        self.orders.sort(key=get_sort_key, reverse=(self.sort_order == Qt.DescendingOrder))
+        
+        # Rebuild table with sorted data
+        self.update_orders_table(self.orders)
     
     def create_selected_pdfs(self):
         """Create PDFs for selected orders."""
@@ -653,13 +753,41 @@ Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
             self.summary_display.setPlainText(f"Özet yüklenemedi: {str(e)}")
     
     def auto_refresh(self):
-        """Auto refresh data."""
-        if self.tabs.currentIndex() == 0:  # Orders tab
-            self.refresh_orders()
-        elif self.tabs.currentIndex() == 1:  # Summary tab
-            self.update_summary_display()
-        elif self.tabs.currentIndex() == 2:  # Stats tab
-            self.update_statistics()
+        """Smart auto refresh that preserves PDF buttons."""
+        try:
+            if self.tabs.currentIndex() == 0:  # Orders tab
+                # Store current selection before refresh
+                selected_order_nos = set()
+                for item in self.tbl_orders.selectedItems():
+                    row = item.row()
+                    if row < len(self.orders):
+                        selected_order_nos.add(self.orders[row].get('order_no'))
+                
+                # Refresh orders
+                self.refresh_orders()
+                
+                # Restore selection after refresh
+                for row in range(self.tbl_orders.rowCount()):
+                    if row < len(self.orders):
+                        if self.orders[row].get('order_no') in selected_order_nos:
+                            self.tbl_orders.selectRow(row)
+                
+                # Always ensure PDF buttons exist after refresh
+                self._ensure_pdf_buttons()
+                
+            elif self.tabs.currentIndex() == 1:  # Summary tab
+                self.update_summary_display()
+            elif self.tabs.currentIndex() == 2:  # Stats tab
+                self.update_statistics()
+        except Exception as e:
+            logger.error(f"Auto refresh error: {e}")
+    
+    def showEvent(self, event):
+        """Override showEvent to ensure PDF buttons when page is shown."""
+        super().showEvent(event)
+        # Ensure PDF buttons exist when returning to this page
+        if hasattr(self, 'tbl_orders') and self.tbl_orders.rowCount() > 0:
+            self._ensure_pdf_buttons()
     
     def show_context_menu(self, position):
         """Show context menu for table."""
@@ -857,14 +985,8 @@ Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
             status_names = {1: "Taslak", 2: "Toplanıyor", 3: "Hazır", 4: "Tamamlandı"}
             status_text = status_names.get(order.get('status', 0), "Bilinmiyor")
             
-            # Extract region - Remove KRD prefix if exists
-            region_full = str(order.get("region", ""))
-            if region_full.startswith("KRD-"):
-                region = region_full[4:]  # Remove "KRD-" prefix
-            elif region_full.startswith("KRD "):
-                region = region_full[4:]  # Remove "KRD " prefix
-            else:
-                region = region_full
+            # Extract region - Combine genexp2 and genexp3
+            region = f"{order.get('genexp2', '')} - {order.get('genexp3', '')}".strip(" -")
             
             info_text = f"""
             Sipariş No: {order.get('order_no')}

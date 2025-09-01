@@ -42,6 +42,9 @@ from reportlab.platypus import (
     Spacer,
 )
 
+# Import centralized WMS path management
+from app.utils.wms_paths import get_wms_folders, get_picklist_path
+
 # ---------------------------------------------------------------------------
 # Paket yolu – script doğrudan çalıştırılırsa dao'yu bulsun
 # ---------------------------------------------------------------------------
@@ -66,15 +69,38 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
 
 # ---------------------------------------------------------------------------
-# Font kaydı
+# Font kaydı - Determine base directory based on execution mode
 # ---------------------------------------------------------------------------
-FONT_PATH = os.getenv("PICKLIST_FONT_PATH", str(BASE_DIR / "fonts" / "DejaVuSans.ttf"))
-if Path(FONT_PATH).exists():
-    pdfmetrics.registerFont(TTFont("DejaVuSans", FONT_PATH))
-    DEFAULT_FONT = "DejaVuSans"
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller executable
+    FONT_BASE_DIR = Path(sys._MEIPASS)
 else:
-    logger.warning("Unicode font bulunamadı (%s) – varsayılan Helvetica kullanılacak", FONT_PATH)
-    DEFAULT_FONT = "Helvetica"
+    # Running in development
+    FONT_BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Try multiple font paths
+font_paths = [
+    str(FONT_BASE_DIR / "app" / "fonts" / "DejaVuSans.ttf"),
+    str(FONT_BASE_DIR / "fonts" / "DejaVuSans.ttf"),
+    os.getenv("PICKLIST_FONT_PATH", ""),
+    str(Path(__file__).resolve().parent.parent / "fonts" / "DejaVuSans.ttf"),
+    str(Path(__file__).resolve().parent.parent / "app" / "fonts" / "DejaVuSans.ttf"),
+]
+
+DEFAULT_FONT = "Helvetica"  # Default fallback
+for font_path in font_paths:
+    if font_path and Path(font_path).exists():
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
+            DEFAULT_FONT = "DejaVuSans"
+            logger.info("Font loaded from: %s", font_path)
+            break
+        except Exception as e:
+            logger.warning("Could not load font from %s: %s", font_path, e)
+            continue
+
+if DEFAULT_FONT == "Helvetica":
+    logger.warning("DejaVuSans.ttf not found; using Helvetica (Turkish characters may not display correctly)")
 
 PARA_STYLE = ParagraphStyle(
     name="tbl",
@@ -84,8 +110,9 @@ PARA_STYLE = ParagraphStyle(
     wordWrap="CJK",
 )
 
-OUT_DIR = Path(os.getenv("PICKLIST_OUTPUT_DIR", BASE_DIR / "picklists"))
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Use centralized WMS path management
+wms_folders = get_wms_folders()
+OUT_DIR = wms_folders['picklists']
 
 # ---------------------------------------------------------------------------
 # PDF üretici
@@ -94,18 +121,36 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 def create_picklist_pdf(order: dict, lines: List[dict]) -> Path:
     """Siparişe ait pick‑list PDF’sini oluşturur ve yolunu döndürür."""
     ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pdf_path = OUT_DIR / f"PICKLIST_{ts}_ORD{order['order_no']}.pdf"
+    
+    # Clean filename - remove problematic characters
+    order_no = str(order['order_no']).replace('/', '_').replace('\\', '_')
+    filename = f"PICKLIST_{ts}_ORD{order_no}.pdf"
+    
+    # Use centralized path management
+    pdf_path = get_picklist_path(filename)
+    
+    # Ensure directory exists
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ReportLab Path objesini kabul etmez – stringe dönüştürüyoruz
-    doc = SimpleDocTemplate(str(pdf_path), pagesize=A4,
+    doc = SimpleDocTemplate(str(pdf_path).replace('\\', '/'), pagesize=A4,
                             topMargin=25*mm, bottomMargin=20*mm)
 
     elements = []
+    
+    # First line: Order and Customer
     head = (
         f"<b>Sipariş No:</b> {order['order_no']}  "
         f"<b>Müşteri:</b> {order['customer_code']} – {order['customer_name']}"
     )
     elements.append(Paragraph(head, ParagraphStyle("head", fontName=DEFAULT_FONT, fontSize=12, leading=14)))
+    
+    # Second line: Region info if available
+    region = f"{order.get('genexp2', '')} - {order.get('genexp3', '')}".strip(" -")
+    if region:
+        region_text = f"<b>Bölge:</b> {region}"
+        elements.append(Paragraph(region_text, ParagraphStyle("region", fontName=DEFAULT_FONT, fontSize=10, leading=12)))
+    
     elements.append(Spacer(1, 6 * mm))
 
     data = [["Stok Kodu", "Ürün Adı", "Adet"]]

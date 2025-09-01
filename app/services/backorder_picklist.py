@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import List, Dict
@@ -41,19 +42,46 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR))
 
 from app.dao import logo as dao
+from app.utils.wms_paths import get_wms_folders, get_picklist_path
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
 
-# PDF Ayarları
-OUT_DIR = BASE_DIR / "picklists"
-OUT_DIR.mkdir(exist_ok=True)
-FONT_PATH = BASE_DIR / "fonts" / "DejaVuSans.ttf"
-if FONT_PATH.exists():
-    pdfmetrics.registerFont(TTFont("DejaVu", str(FONT_PATH)))
-    FONT = "DejaVu"
+# Use centralized WMS path management
+wms_folders = get_wms_folders()
+OUT_DIR = wms_folders['picklists']
+
+# Font registration - Determine base directory based on execution mode
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller executable
+    FONT_BASE_DIR = Path(sys._MEIPASS)
 else:
-    FONT = "Helvetica"
+    # Running in development
+    FONT_BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Try multiple font paths
+font_paths = [
+    str(FONT_BASE_DIR / "app" / "fonts" / "DejaVuSans.ttf"),
+    str(FONT_BASE_DIR / "fonts" / "DejaVuSans.ttf"),
+    os.getenv("BACKORDER_FONT_PATH", ""),
+    str(Path(__file__).resolve().parent.parent / "fonts" / "DejaVuSans.ttf"),
+    str(Path(__file__).resolve().parent.parent / "app" / "fonts" / "DejaVuSans.ttf"),
+]
+
+FONT = "Helvetica"  # Default fallback
+for font_path in font_paths:
+    if font_path and Path(font_path).exists():
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVu", font_path))
+            FONT = "DejaVu"
+            logger.info("Font loaded from: %s", font_path)
+            break
+        except Exception as e:
+            logger.warning("Could not load font from %s: %s", font_path, e)
+            continue
+
+if FONT == "Helvetica":
+    logger.warning("DejaVuSans.ttf not found; using Helvetica (Turkish characters may not display correctly)")
 
 def fetch_fulfilled(date: dt.date) -> List[Dict]:
     # Parameter binding for date may fail on ODBC driver; inline literal.
@@ -90,8 +118,15 @@ def create_picklist(date: dt.date):
         return
 
     ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_file = OUT_DIR / f"BACKORDER_PICKLIST_{date.strftime('%Y%m%d')}_{ts}.pdf"
-    doc = SimpleDocTemplate(str(out_file), pagesize=A4,
+    
+    # Use centralized path management
+    filename = f"BACKORDER_PICKLIST_{date.strftime('%Y%m%d')}_{ts}.pdf"
+    out_file = get_picklist_path(filename)
+    
+    # Ensure directory exists
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    doc = SimpleDocTemplate(str(out_file).replace('\\', '/'), pagesize=A4,
                             topMargin=20*mm, bottomMargin=20*mm)
 
     # Başlık
