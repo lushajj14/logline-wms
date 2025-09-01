@@ -1,30 +1,64 @@
-# Core Dependencies
-PyQt5==5.15.*
-PyQt5-Qt5
-PyQt5-sip
-pyodbc
+# Core PyQt5 Dependencies
+PyQt5==5.15.10
+PyQt5-Qt5==5.15.2
+PyQt5-sip==12.13.0
+
+# Database Dependencies
+pyodbc==5.0.1
+
+# Data Processing
+# Using latest versions for Python 3.13 compatibility
 pandas
-openpyxl
-xlrd
-python-dotenv
-qrcode 
-pillow
-qrcode[pil] 
-python-multipart>=0.0.7
-fastapi
-uvicorn[standard]>=0.24.0
-python-jose[cryptography]
-bcrypt>=4.0.0
-pyinstaller
-reportlab
 numpy
+openpyxl==3.1.2
+xlrd==2.0.1
 
-# Testing Dependencies
-pytest>=7.0.0
-pytest-cov>=4.0.0
-pytest-env>=0.8.0
-pytest-mock>=3.10.0
+# Environment & Configuration
+python-dotenv==1.0.0
 
-# Security Scanning
-bandit>=1.7.0
-safety>=2.3.0
+# QR Code & Barcode Generation
+qrcode[pil]==7.4.2
+Pillow==10.2.0
+
+# PDF Generation
+reportlab==4.0.9
+
+# Web Framework (API)
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.7
+
+# Security & Authentication
+python-jose[cryptography]==3.3.0
+bcrypt==4.1.2
+cryptography==42.0.2
+
+# Build Tool
+pyinstaller==6.3.0
+
+# Additional Dependencies for PyInstaller
+altgraph==0.17.4
+pefile==2023.2.7
+pywin32-ctypes==0.2.2
+
+# Testing Dependencies (optional for development)
+pytest==7.4.4
+pytest-cov==4.1.0
+pytest-env==1.1.3
+pytest-mock==3.12.0
+
+# Security Scanning (optional for development)
+bandit==1.7.5
+safety==3.0.1
+
+# Additional runtime dependencies that may be needed
+packaging==23.2
+setuptools==69.0.3
+wheel==0.42.0
+
+# For sound support
+# Note: PyQt5 includes multimedia support, but these might be needed for specific audio codecs
+# No additional audio dependencies required as PyQt5.QtMultimedia handles basic sound files
+
+# Hidden imports for PyInstaller (these are actually Python packages)
+# These will be included in the .spec file as hidden imports rather than requirements
