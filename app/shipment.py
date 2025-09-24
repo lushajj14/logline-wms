@@ -408,6 +408,7 @@ def mark_loaded(trip_id: int, pkg_no: int, *, item_code: str | None = None) -> i
         cursor = cn.cursor()
         
         # Atomic upsert with check for already loaded
+        # Note: Removed OUTPUT clause due to trigger conflict
         cursor.execute(
             f"""
             MERGE {SCHEMA}.shipment_loaded AS tgt
@@ -420,20 +421,32 @@ def mark_loaded(trip_id: int, pkg_no: int, *, item_code: str | None = None) -> i
                     loaded_time = GETDATE()
             WHEN NOT MATCHED THEN
                 INSERT (trip_id, pkg_no, loaded, loaded_by, loaded_time)
-                VALUES (src.trip_id, src.pkg_no, 1, src.loaded_by, GETDATE())
-            OUTPUT INSERTED.loaded, DELETED.loaded AS old_loaded;
+                VALUES (src.trip_id, src.pkg_no, 1, src.loaded_by, GETDATE());
             """,
             trip_id, pkg_no, getpass.getuser()
         )
         
+        # Get row count separately
+        cursor.execute("SELECT @@ROWCOUNT as affected_rows")
         result = cursor.fetchone()
-        if not result:
+        
+        if not result or result.affected_rows == 0:
             # No row was affected - already loaded
             return 0
-            
-        # Check if it was already loaded (old_loaded was 1)
-        if result.old_loaded == 1:
-            return 0
+        
+        # Update shipment_header pkgs_loaded count
+        cursor.execute(
+            f"""
+            UPDATE {SCHEMA}.shipment_header
+            SET pkgs_loaded = (
+                SELECT COUNT(*) 
+                FROM {SCHEMA}.shipment_loaded 
+                WHERE trip_id = ? AND loaded = 1
+            )
+            WHERE id = ?
+            """,
+            trip_id, trip_id
+        )
         
         # Optional – mark related stock lines
         if item_code:

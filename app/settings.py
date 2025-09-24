@@ -39,7 +39,7 @@ DEFAULTS: Dict[str, Any] = {
     },
     "loader": {
         "auto_refresh": 30,
-        "block_incomplete": True
+        "block_incomplete": False
     },
     "db": {
         "server":    "192.168.5.100,1433",

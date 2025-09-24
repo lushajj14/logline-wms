@@ -26,7 +26,7 @@ from PyQt5.QtCore import QUrl, QTimer, Qt
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QMessageBox,
-    QInputDialog, QProgressBar, QMenu, QAction, QTabWidget
+    QInputDialog, QProgressBar, QMenu, QAction, QTabWidget, QProgressDialog, QApplication
 )
 from PyQt5.QtGui import QColor
 
@@ -59,6 +59,9 @@ from app.dao.transactions import transaction_scope  # noqa: E402
 import app.backorder as bo  # noqa: E402
 from app.shipment import upsert_header  # noqa: E402
 from app import toast  # noqa: E402
+
+# Import worker for threaded order completion
+from app.ui.workers.order_completion_worker import OrderCompletionWorker
 
 # Barcode lookup moved to centralized service
 from app.services.barcode_service import barcode_xref_lookup, find_item_by_barcode
@@ -1434,10 +1437,10 @@ class ScannerPage(QWidget):
             
         # 4. Depo prefix kontrolü - yanlış depo barkodu
         detected_wh = self._infer_wh_from_prefix(raw)
-        if detected_wh and detected_wh not in self._warehouse_set:
+        if detected_wh and int(detected_wh) not in self._warehouse_set:
             sound_manager.play_error()
             QMessageBox.warning(self, "Depo Hatası", 
-                              f"Bu barkod farklı depo için (Depo: {detected_wh})!\nBu siparişin depoları: {', '.join(self._warehouse_set)}")
+                              f"Bu barkod farklı depo için (Depo: {detected_wh})!\nBu siparişin depoları: {', '.join(str(w) for w in self._warehouse_set)}")
             return
 
         # Thread-safe scan işlemi
@@ -1496,14 +1499,28 @@ class ScannerPage(QWidget):
 
             # Database ve local state güncelleme - atomic olmalı
             try:
-                # Önce database güncelle
-                queue_inc(self.current_order["order_id"], code, qty_inc)
+                # YENİ: Atomic scanner modülü ile güvenli güncelleme
+                from app.dao.atomic_scanner import atomic_scan_increment
                 
-                # Database başarılıysa local state güncelle
-                self.sent[code] = sent_now + qty_inc
+                result = atomic_scan_increment(
+                    order_id=self.current_order["order_id"],
+                    item_code=code,
+                    qty_increment=qty_inc,
+                    qty_ordered=ordered,
+                    over_scan_tolerance=over_tol
+                )
                 
-                # UI güncelle
-                self._update_single_row(code, sent_now + qty_inc)
+                if result.success:
+                    # Database başarılıysa local state güncelle
+                    self.sent[code] = result.new_qty_sent
+                    
+                    # UI güncelle
+                    self._update_single_row(code, result.new_qty_sent)
+                else:
+                    # Miktar aşımı veya başka sorun
+                    QMessageBox.warning(self, "Uyarı", result.message)
+                    sound_manager.play_no()
+                    return
                 
                 # === YENİ ÖZELLİKLER ===
                 # Progress bar güncelle
@@ -1591,6 +1608,7 @@ class ScannerPage(QWidget):
       
         # ---------- Siparişi tamamla ----------
     def finish_order(self):
+        """Original synchronous version - replaced by finish_order_threaded"""
         if not self.current_order:
             return
 
@@ -1641,123 +1659,91 @@ class ScannerPage(QWidget):
         )
         if not ok:
             return
-
-        order_id  = self.current_order["order_id"]
-        order_no  = self.current_order["order_no"]
-        trip_date = date.today().isoformat()          # ★ tek noktadan üret
-
-        # --- 3. Logo başlığı ---------------------------------------------------
-        hdr = fetch_order_header(order_no)
-        if not hdr:
-            QMessageBox.warning(self, "Logo", "Sipariş başlığı okunamadı")
-            return
-
-        # Use transaction for all database operations
+        
+        # Call threaded version ONLY - remove duplicate synchronous operations
+        self.finish_order_threaded(pkg_tot)
+            
+    def finish_order_threaded(self, package_count: int):
+        """
+        Threaded version of finish_order to prevent UI freezing.
+        Uses background worker with progress dialog.
+        """
+        # Create progress dialog
+        self.progress_dialog = QProgressDialog(
+            "İşlem başlatılıyor...",
+            None,  # No cancel button
+            0, 100,
+            self
+        )
+        self.progress_dialog.setWindowTitle("Sipariş Tamamlanıyor")
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setMinimumDuration(0)  # Show immediately
+        self.progress_dialog.setCancelButton(None)  # Cannot be cancelled
+        
+        # Create worker thread
+        self.completion_worker = OrderCompletionWorker(
+            order_data=self.current_order,
+            lines=self.lines.copy(),
+            sent=self.sent.copy(),
+            package_count=package_count
+        )
+        
+        # Connect signals
+        self.completion_worker.progress_update.connect(self.on_completion_progress)
+        self.completion_worker.completed.connect(self.on_completion_finished)
+        
+        # Start worker
+        self.completion_worker.start()
+        self.progress_dialog.show()
+        
+    def on_completion_progress(self, value: int, message: str):
+        """Update progress dialog with worker progress."""
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.setValue(value)
+            self.progress_dialog.setLabelText(message)
+            QApplication.processEvents()  # Keep UI responsive
+            
+    def on_completion_finished(self, success: bool, message: str):
+        """Handle completion of the worker thread."""
         try:
-            with transaction_scope() as conn:
-                cursor = conn.cursor()
+            # Close progress dialog
+            if hasattr(self, 'progress_dialog'):
+                self.progress_dialog.close()
+                self.progress_dialog.deleteLater()
                 
-                # ------------------------------------------------------------ 3-A
-                invoice_no = fetch_invoice_no(order_no)
-                inv_root   = invoice_no.split("-K")[0] if invoice_no else None
-
-                # Create or update shipment header
-                upsert_header(
-                    order_no, trip_date, pkg_tot,
-                    customer_code=hdr.get("cari_kodu") or "",
-                    customer_name=hdr.get("cari_adi", "")[:60],
-                    region=f"{hdr.get('genexp2','')} - {hdr.get('genexp3','')}".strip(" -"),
-                    address1=hdr.get("adres", "")[:128],
-                    invoice_root=inv_root,
-                    conn=conn  # Pass transaction connection
-                )
-
-                # Get header info with transaction connection
-                cursor.execute(
-                    "SELECT id, pkgs_total FROM shipment_header "
-                    "WHERE order_no=? AND trip_date=?", 
-                    order_no, trip_date
-                )
-                cur = cursor.fetchone()
-                if cur:
-                    existing_total = cur.pkgs_total
-                    trip_id = cur.id
-                    
-                    # Update count if different
-                    if existing_total != pkg_tot:
-                        cursor.execute(
-                            "UPDATE shipment_header SET pkgs_total=? "
-                            "WHERE id=?",
-                            pkg_tot, trip_id
-                        )
-                        
-                else:
-                    raise Exception("Failed to create/update shipment header")
-
-                # ------------------------------------------------------------ 3-B
-                # Use centralized safe package synchronization
-                from app.shipment_safe_sync import safe_sync_packages
-                sync_result = safe_sync_packages(trip_id, pkg_tot)
+            # Clean up worker
+            if hasattr(self, 'completion_worker'):
+                self.completion_worker.quit()
+                self.completion_worker.wait()
+                self.completion_worker.deleteLater()
                 
-                if not sync_result["success"]:
-                    raise Exception(f"Package sync failed: {sync_result['message']}")
-
-                # ------------------------------------------------------------ 3-C
-                # Process backorders and shipment lines
-                for ln in self.lines:
-                    code      = ln["item_code"]
-                    wh        = ln["warehouse_id"]
-                    ordered   = ln["qty_ordered"]
-                    sent_qty  = self.sent.get(code, 0)
-                    missing   = ordered - sent_qty
-
-                    if sent_qty:
-                        bo.add_shipment(
-                            order_no, trip_date, code,
-                            warehouse_id=wh,
-                            invoiced_qty=ordered,
-                            qty_delta=sent_qty,
-                            conn=conn  # Pass transaction connection
-                        )
-                    if missing > 0:
-                        bo.insert_backorder(
-                            order_no, ln["line_id"], wh, code, missing,
-                            conn=conn  # Pass transaction connection
-                        )
-
-                # ------------------------------------------------------------ 3-D
-                # Update Logo order status
-                ficheno = hdr.get("ficheno", "")
-                genexp5_text = f"Sipariş No: {ficheno}" if ficheno else ""
+            if success:
+                # Clear UI on success
+                self.lines.clear()
+                self.sent.clear()
+                order_no = self.current_order.get("order_no", "N/A") if self.current_order else "N/A"
+                self.current_order = None
+                self._barcode_cache.clear()
+                self._warehouse_set.clear()
+                self.tbl.setRowCount(0)
+                self.refresh_orders()
                 
-                cursor.execute(
-                    "UPDATE LG_025_ORFICHE SET STATUS = 4, GENEXP4 = ?, GENEXP5 = ? "
-                    "WHERE LOGICALREF = ?",
-                    f"PAKET SAYISI : {pkg_tot}", genexp5_text, order_id
-                )
-                
-                # Remove from queue
-                cursor.execute("DELETE FROM WMS_PICKQUEUE WHERE ORDER_ID = ?", order_id)
-                
-                # Transaction will auto-commit on success
+                # Add toast notification
                 toast("STATUS 4 verildi", order_no)
-
-            # --- 4. UI temizlik / yenileme --------------------------------
-            self.lines.clear()
-            self.sent.clear()
-            self.current_order = None
-            self._barcode_cache.clear()  # Thread-safe cache temizle
-            self._warehouse_set.clear()
-            self.tbl.setRowCount(0)
-            self.refresh_orders()
-
-            QMessageBox.information(
-                self, "Tamam",
-                f"{order_no} işlemi bitti."
-            )
-
+                
+                QMessageBox.information(
+                    self, "Tamam",
+                    f"{order_no} işlemi bitti."
+                )
+            else:
+                # Show error message from worker
+                QMessageBox.critical(
+                    self, "İşlem Başarısız",
+                    f"Sipariş tamamlanamadı:\n{message}"
+                )
+                
         except Exception as exc:
-            logger.exception("finish_order")
+            logger.exception("finish_order completion handler")
             QMessageBox.critical(self, "Tamamlama Hatası", str(exc))
     
     # =========================================================================

@@ -24,16 +24,18 @@ def barcode_xref_lookup(barcode: str, warehouse_id: str | None = None) -> Tuple[
           instead of silently returning (None, None)
     """
     try:
+        # Debug log
+        logger.debug(f"Looking up barcode: '{barcode}' with warehouse: {warehouse_id}")
         if warehouse_id is not None:
             row = fetch_one(
                 "SELECT TOP 1 item_code, multiplier "
-                "FROM barcode_xref WHERE barcode=? AND warehouse_id=?",
+                "FROM barcode_xref WHERE UPPER(barcode)=UPPER(?) AND warehouse_id=?",
                 barcode, warehouse_id
             )
         else:
             row = fetch_one(
                 "SELECT TOP 1 item_code, multiplier "
-                "FROM barcode_xref WHERE barcode=?", 
+                "FROM barcode_xref WHERE UPPER(barcode)=UPPER(?)", 
                 barcode
             )
         
@@ -80,7 +82,9 @@ def find_item_by_barcode(barcode: str, lines: list, warehouse_set: set | None = 
     if warehouse_set:
         for wh_id in warehouse_set:
             try:
-                item_code, multiplier = barcode_xref_lookup(barcode, wh_id)
+                # Convert warehouse_id to string if it's int
+                wh_id_str = str(wh_id) if isinstance(wh_id, int) else wh_id
+                item_code, multiplier = barcode_xref_lookup(barcode, wh_id_str)
                 if item_code:
                     matched_line = next(
                         (ln for ln in lines

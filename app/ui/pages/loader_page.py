@@ -221,7 +221,12 @@ class LoaderPage(QWidget):
                 else "✔" if r["closed"]                       # tamamen yüklü
                 else "⏳"                                      # bekliyor
             )
-            r["loaded_at"] = (r.get("loaded_at") or "")[:19]
+            # Handle loaded_at - ensure it's a string before slicing
+            loaded_at_value = r.get("loaded_at") or ""
+            if isinstance(loaded_at_value, datetime):
+                r["loaded_at"] = loaded_at_value.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                r["loaded_at"] = str(loaded_at_value)[:19]
 
         # Tabloyu güncelle
         self._rows   = rows
@@ -420,12 +425,13 @@ class LoaderPage(QWidget):
             # 1. Güncel veriyi al
             updated_row = fetch_one("""
                 SELECT h.id, h.order_no, h.customer_code, h.customer_name, h.region, 
-                       h.address1, h.pkgs_total, h.closed, h.created_at, h.en_route,
+                       h.address1, h.pkgs_total, h.closed, 
+                       CONVERT(char(19), h.created_at, 120) as created_at, h.en_route,
                        COALESCE(l.loaded_count, 0) as pkgs_loaded,
-                       l.loaded_at
+                       CONVERT(char(19), l.loaded_time, 120) as loaded_at
                 FROM shipment_header h
                 LEFT JOIN (
-                    SELECT trip_id, COUNT(*) as loaded_count, MAX(loaded_at) as loaded_at
+                    SELECT trip_id, COUNT(*) as loaded_count, MAX(loaded_time) as loaded_time
                     FROM shipment_loaded 
                     WHERE trip_id = ? AND loaded = 1
                     GROUP BY trip_id
@@ -442,7 +448,12 @@ class LoaderPage(QWidget):
                 else "✔" if updated_row["closed"] 
                 else "⏳"
             )
-            updated_row["loaded_at"] = (updated_row.get("loaded_at") or "")[:19]
+            # Handle loaded_at - ensure it's a string before slicing
+            loaded_at_value = updated_row.get("loaded_at") or ""
+            if isinstance(loaded_at_value, datetime):
+                updated_row["loaded_at"] = loaded_at_value.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                updated_row["loaded_at"] = str(loaded_at_value)[:19]
             
             # 2. Tabloda satırı bul ve güncelle
             for row_idx in range(self.tbl.rowCount()):

@@ -55,7 +55,7 @@ DEFAULTS: Dict[str, Any] = {
     },
     "loader": {
         "auto_refresh": 30,
-        "block_incomplete": True,
+        "block_incomplete": False,
         "show_completed": False,
         "auto_close_on_complete": False
     },

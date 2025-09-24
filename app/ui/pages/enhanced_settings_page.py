@@ -581,7 +581,7 @@ class EnhancedSettingsPage(QWidget):
         
         # Loader
         self.spin_loader_refresh.setValue(st.get("loader.auto_refresh", 30))
-        self.chk_block_incomplete.setChecked(st.get("loader.block_incomplete", True))
+        self.chk_block_incomplete.setChecked(st.get("loader.block_incomplete", False))  # Varsayılan kapalı
         self.chk_show_completed.setChecked(st.get("loader.show_completed", False))
         self.chk_auto_close.setChecked(st.get("loader.auto_close_on_complete", False))
         

@@ -44,7 +44,8 @@
       "Bash(start C:UsersUserDocumentsWMSlabelsLABEL_20250829_162300_SO2025-000202.pdf)",
       "Read(C:\\Users\\User\\Documents\\WMS\\picklists/**)",
       "Bash(pyinstaller:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Read(C:\\Users\\User\\Documents\\WMS/**)"
     ],
     "deny": [],
     "ask": []
