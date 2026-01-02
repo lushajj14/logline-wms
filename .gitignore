@@ -39,6 +39,10 @@ env/
 *~
 .DS_Store
 
+# Claude Code & Serena (local settings)
+.claude/settings.local.json
+.serena/
+
 # Logs
 *.log
 logs/
