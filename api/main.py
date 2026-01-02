@@ -59,7 +59,7 @@ app.add_middleware(
 def check_user(u: str, p: str) -> bool:
     with pyodbc.connect(CONN_STR) as conn:
         cur = conn.cursor()
-        cur.execute("EXEC dbo.sp_auth_login ?, ?", u, p)
+        cur.execute("EXEC dbo.sp_auth_login_v2 ?, ?", u, p)
         return cur.fetchone() is not None
 
 # ───────────────────────────── Giriş modeli
@@ -213,6 +213,291 @@ def scan_pkg(trip_id: int, pkg_no: int, _: TokenData):
     conn.commit()
     return {"status": "ok"}
 
+# ───────────────────────────── ARAÇ YÜKLEME /vehicle/load
+# ✅ MOBİL ARAÇ YÜKLEME ENDPOİNT'İ (Masaüstü loader_page.py ile aynı mantık)
+
+@app.post("/vehicle/load")
+def vehicle_load(data: dict, _: TokenData):
+    """
+    Mobil'den araç yükleme - Masaüstü ile aynı mantık
+    Body: {"barcode": "CAN2025000001-K1"}
+    """
+    barcode = data.get("barcode", "").strip()
+    
+    # Barkodu parse et
+    if not barcode or "-K" not in barcode:
+        raise HTTPException(400, "Geçersiz barkod formatı")
+    
+    # invoice_root ve paket no'yu ayır
+    inv_root, pkg_txt = barcode.rsplit("-K", 1)
+    try:
+        pkg_no = int(pkg_txt)
+    except ValueError:
+        raise HTTPException(400, "Geçersiz paket numarası")
+    
+    conn, cur = get_conn_cur()
+    
+    try:
+        # 1. Trip ID'yi bul (masaüstündeki trip_by_barkod mantığı)
+        cur.execute("""
+            SELECT id, pkgs_total 
+            FROM shipment_header 
+            WHERE invoice_root = ?
+            ORDER BY created_at DESC
+        """, inv_root)
+        
+        trip = cur.fetchone()
+        if not trip:
+            raise HTTPException(404, f"Sevkiyat bulunamadı: {inv_root}")
+        
+        trip_id = trip[0]
+        pkgs_total = trip[1]
+        
+        # Paket numarası kontrolü
+        if pkg_no > pkgs_total:
+            raise HTTPException(400, f"Geçersiz paket no. Maksimum: {pkgs_total}")
+        
+        # 2. Paket zaten var mı kontrol et
+        cur.execute("""
+            SELECT loaded FROM shipment_loaded 
+            WHERE trip_id = ? AND pkg_no = ?
+        """, trip_id, pkg_no)
+        
+        existing = cur.fetchone()
+        
+        if existing and existing[0] == 1:
+            # Zaten yüklenmiş
+            conn.close()
+            return {
+                "status": "duplicate",
+                "message": "Bu paket zaten yüklenmiş",
+                "trip_id": trip_id,
+                "pkg_no": pkg_no
+            }
+        elif existing:
+            # Var ama loaded=0, güncelle
+            cur.execute("""
+                UPDATE shipment_loaded
+                SET loaded = 1,
+                    loaded_by = SYSTEM_USER,
+                    loaded_time = GETDATE()
+                WHERE trip_id = ? AND pkg_no = ?
+            """, trip_id, pkg_no)
+        else:
+            # Yoksa direkt loaded=1 olarak ekle
+            cur.execute("""
+                INSERT INTO shipment_loaded (trip_id, pkg_no, loaded, loaded_by, loaded_time)
+                VALUES (?, ?, 1, SYSTEM_USER, GETDATE())
+            """, trip_id, pkg_no)
+        
+        # 4. Header'daki pkgs_loaded sayısını güncelle
+        cur.execute("""
+            UPDATE shipment_header
+            SET pkgs_loaded = (
+                SELECT COUNT(*) FROM shipment_loaded 
+                WHERE trip_id = ? AND loaded = 1
+            )
+            WHERE id = ?
+        """, trip_id, trip_id)
+        
+        # 5. Güncel durumu al
+        cur.execute("""
+            SELECT 
+                h.order_no,
+                h.customer_name,
+                h.pkgs_total,
+                (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ? AND loaded = 1) as loaded_count,
+                CASE 
+                    WHEN h.pkgs_total = (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ? AND loaded = 1)
+                    THEN 1 ELSE 0 
+                END as is_complete
+            FROM shipment_header h
+            WHERE h.id = ?
+        """, trip_id, trip_id, trip_id)
+        
+        result = cur.fetchone()
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "trip_id": trip_id,
+            "pkg_no": pkg_no,
+            "order_no": result[0],
+            "customer_name": result[1],
+            "loaded": result[3],
+            "total": result[2],
+            "progress": f"{result[3]}/{result[2]}",
+            "is_complete": bool(result[4])
+        }
+        
+    except HTTPException:
+        conn.close()
+        raise
+    except Exception as e:
+        conn.close()
+        raise HTTPException(500, f"Veritabanı hatası: {str(e)}")
+
+# ───────────────────────────── ARAÇ YÜKLEME TAMAMLAMA /vehicle/close_trip
+# ✅ MOBİL ARAÇ YÜKLEME TAMAMLAMA (Masaüstü close_trip ile aynı mantık)
+
+@app.post("/vehicle/close_trip")
+def vehicle_close_trip(data: dict, _: TokenData):
+    """
+    Mobil'den araç yüklemeyi tamamla - Yola çıktı olarak işaretle
+    Body: {"trip_id": 78}
+    """
+    trip_id = int(data.get("trip_id", 0))
+    if not trip_id:
+        raise HTTPException(400, "Trip ID gerekli")
+    
+    conn, cur = get_conn_cur()
+    
+    try:
+        # Trip'in var olup olmadığını kontrol et
+        cur.execute("""
+            SELECT id, closed, en_route, pkgs_total,
+                   (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ? AND loaded = 1) as loaded_count
+            FROM shipment_header 
+            WHERE id = ?
+        """, trip_id, trip_id)
+        
+        trip = cur.fetchone()
+        if not trip:
+            conn.close()
+            raise HTTPException(404, "Sevkiyat bulunamadı")
+        
+        if trip[1]:  # closed
+            conn.close()
+            return {
+                "status": "already_closed",
+                "message": "Bu sevkiyat zaten kapatılmış"
+            }
+        
+        loaded_count = trip[4]
+        pkgs_total = trip[3]
+        
+        # QR token oluştur (yoksa)
+        import uuid
+        cur.execute("""
+            UPDATE shipment_header
+            SET en_route = 1,
+                loaded_at = GETDATE(),
+                qr_token = CASE 
+                    WHEN qr_token IS NULL THEN ?
+                    ELSE qr_token 
+                END
+            WHERE id = ?
+        """, str(uuid.uuid4()), trip_id)
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "message": "Yükleme tamamlandı, araç yola çıktı",
+            "trip_id": trip_id,
+            "loaded_count": loaded_count,
+            "total_count": pkgs_total,
+            "completion_rate": f"{loaded_count}/{pkgs_total}"
+        }
+        
+    except HTTPException:
+        conn.close()
+        raise
+    except Exception as e:
+        conn.close()
+        raise HTTPException(500, f"Veritabanı hatası: {str(e)}")
+
+# ───────────────────────────── TOPLU ARAÇ YÜKLEME KAPATMA /vehicle/close_trips
+# ✅ BİRDEN FAZLA TRIP'İ TEK SEFERDE KAPAT (Çoklu müşteri desteği)
+
+@app.post("/vehicle/close_trips")
+def vehicle_close_trips(data: dict, _: TokenData):
+    """
+    Birden fazla trip'i tek seferde kapat - Çoklu müşteri için
+    Body: {"trip_ids": [78, 79, 80]}
+    """
+    trip_ids = data.get("trip_ids", [])
+    if not trip_ids:
+        raise HTTPException(400, "En az bir trip ID gerekli")
+    
+    conn, cur = get_conn_cur()
+    results = []
+    
+    try:
+        import uuid
+        
+        for trip_id in trip_ids:
+            try:
+                # Trip'in var olup olmadığını kontrol et
+                cur.execute("""
+                    SELECT id, closed, pkgs_total,
+                           (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ? AND loaded = 1) as loaded_count
+                    FROM shipment_header 
+                    WHERE id = ?
+                """, trip_id, trip_id)
+                
+                trip = cur.fetchone()
+                if not trip:
+                    results.append({
+                        "trip_id": trip_id,
+                        "status": "error",
+                        "message": "Sevkiyat bulunamadı"
+                    })
+                    continue
+                
+                if trip[1]:  # closed
+                    results.append({
+                        "trip_id": trip_id,
+                        "status": "already_closed",
+                        "message": "Zaten kapatılmış"
+                    })
+                    continue
+                
+                # QR token oluştur ve trip'i kapat
+                cur.execute("""
+                    UPDATE shipment_header
+                    SET en_route = 1,
+                        loaded_at = GETDATE(),
+                        qr_token = CASE 
+                            WHEN qr_token IS NULL THEN ?
+                            ELSE qr_token 
+                        END
+                    WHERE id = ?
+                """, str(uuid.uuid4()), trip_id)
+                
+                results.append({
+                    "trip_id": trip_id,
+                    "status": "success",
+                    "loaded_count": trip[3],
+                    "total_count": trip[2]
+                })
+                
+            except Exception as e:
+                results.append({
+                    "trip_id": trip_id,
+                    "status": "error",
+                    "message": str(e)
+                })
+        
+        conn.commit()
+        conn.close()
+        
+        # Özet bilgi
+        success_count = sum(1 for r in results if r["status"] == "success")
+        
+        return {
+            "status": "success",
+            "message": f"{success_count}/{len(trip_ids)} trip başarıyla kapatıldı",
+            "results": results
+        }
+        
+    except Exception as e:
+        conn.close()
+        raise HTTPException(500, f"Veritabanı hatası: {str(e)}")
+
 # ───────────────────────────── TOPLU teslim /load_pkgs
 # ✅ DÜZELTİLMİŞ BACKEND load_pkgs ENDPOİNT'İ
 
@@ -228,7 +513,7 @@ def load_pkgs(data: dict, _: TokenData):
     
     conn, cur = get_conn_cur()
     
-    # 1. ✅ Paketleri delivered=1 yap
+    # 1. ✅ Paketleri delivered=1 yap (SADECE ARACA YÜKLENMİŞ OLANLAR)
     placeholders = ",".join("?" * len(pkgs))
     cur.execute(
         f"""
@@ -238,6 +523,7 @@ def load_pkgs(data: dict, _: TokenData):
                delivered_by = SYSTEM_USER
          WHERE trip_id = ?
            AND pkg_no IN ({placeholders})
+           AND loaded = 1     -- ✅ SADECE ARACA YÜKLENMİŞ PAKETLERİ TESLİM ET
            AND delivered = 0  -- ✅ Sadece henüz teslim edilmemişleri güncelle
         """,
         (trip_id, *pkgs),
@@ -245,12 +531,12 @@ def load_pkgs(data: dict, _: TokenData):
     
     updated_packages = cur.rowcount  # ✅ Gerçekten güncellenen paket sayısı
     
-    # 2. ✅ shipment_header'daki pkgs_loaded sayısını güncelle
+    # 2. ✅ shipment_header'daki pkgs_loaded sayısını güncelle (SADECE ARACA YÜKLENİP TESLİM EDİLENLER)
     cur.execute("""
         UPDATE shipment_header 
         SET pkgs_loaded = (
             SELECT COUNT(*) FROM shipment_loaded 
-            WHERE trip_id = ? AND delivered = 1
+            WHERE trip_id = ? AND loaded = 1 AND delivered = 1
         )
         WHERE id = ?
     """, trip_id, trip_id)
@@ -258,8 +544,8 @@ def load_pkgs(data: dict, _: TokenData):
     # 3. ✅ Tüm paketler teslim edildiyse trip'i kapat
     cur.execute("""
         SELECT 
-            (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ? AND delivered = 0) as remaining_count,
-            (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ?) as total_count
+            (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ? AND loaded = 1 AND delivered = 0) as remaining_count,
+            (SELECT COUNT(*) FROM shipment_loaded WHERE trip_id = ? AND loaded = 1) as total_count
     """, trip_id, trip_id)
     
     result = cur.fetchone()
@@ -309,11 +595,13 @@ def trips(start: str, end: str, _: TokenData):
                -- Öğrenilen koordinatları JOIN ile getir
                ac.latitude,
                ac.longitude,
-               -- ✅ DÜZELTİLMİŞ PAKET SAYMA MANTĞI
-               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id) AS pkgs_total,
-               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 1) AS pkgs_loaded,
-               -- ✅ KALAN PAKET SAYISI (Frontend için)
-               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 0) AS pkgs_remaining
+               -- ✅ ARACA GERÇEKTEN YÜKLENMİŞ PAKETLERİ SAY (loaded=1 olanlar)
+               h.pkgs_total,
+               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1) AS pkgs_loaded,
+               -- ✅ TESLİM EDİLEN PAKET SAYISI (loaded=1 VE delivered=1)
+               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 1) AS pkgs_delivered,
+               -- ✅ ARACA YÜKLENMİŞ AMA TESLİM EDİLMEMİŞ PAKET SAYISI
+               (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 0) AS pkgs_remaining
           FROM shipment_header h
           LEFT JOIN address_coordinates ac 
             ON h.address1 LIKE '%' + ac.customer_addr + '%'
@@ -325,8 +613,9 @@ def trips(start: str, end: str, _: TokenData):
          WHERE h.created_at BETWEEN ? AND ?
            AND h.closed = 0  -- ✅ Sadece açık trip'ler
            AND h.invoice_root IS NOT NULL
-           AND h.qr_token IS NOT NULL
-           AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 0)  -- ✅ Bekleyen paket var mı
+           AND h.qr_token IS NOT NULL  -- ✅ QR token kontrolü (yükleme tamamlanmış olanlar)
+           -- ✅ SADECE ARACA YÜKLENMİŞ (loaded=1) VE TESLİM EDİLMEMİŞ (delivered=0) PAKETLERİ OLANLAR
+           AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 0)
          ORDER BY h.created_at;
         """,
         start, end,
@@ -343,10 +632,11 @@ def trips(start: str, end: str, _: TokenData):
             "latitude": r.latitude,
             "longitude": r.longitude,
             "pkgs_total": r.pkgs_total,
-            "pkgs_loaded": r.pkgs_loaded,
-            "pkgs_remaining": r.pkgs_remaining,  # ✅ Yeni field
-            "status": f"{r.pkgs_loaded}/{r.pkgs_total}",
-            "delivered": r.pkgs_loaded,  # ✅ Backend'den gelen gerçek veri
+            "pkgs_loaded": r.pkgs_loaded,  # ✅ Araca yüklenen toplam paket
+            "pkgs_delivered": r.pkgs_delivered,  # ✅ Teslim edilen paket sayısı
+            "pkgs_remaining": r.pkgs_remaining,  # ✅ Kalan paket sayısı
+            "status": f"{r.pkgs_delivered}/{r.pkgs_total}",  # ✅ Teslim durumu
+            "delivered": r.pkgs_delivered,  # ✅ Geriye uyumluluk için
         }
         for r in cur
     ]
@@ -1077,15 +1367,20 @@ def get_customers_with_pending_orders(start: str = None, end: str = None, _: Tok
         SELECT h.customer_code,
                h.customer_name,
                COUNT(DISTINCT h.id) as pending_order_count,
-               SUM(CASE WHEN EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 0)
-                        THEN (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id)
+               -- ✅ DÜZELTİLDİ: Sadece yüklenen ve teslim edilmemiş paketleri say
+               SUM(CASE WHEN EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 0)
+                        THEN (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 0)
+                        ELSE 0 END) AS pkgs_remaining,
+               -- Geriye uyumluluk için eski field'ları da koru
+               SUM(CASE WHEN EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 0)
+                        THEN (SELECT COUNT(*) FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 0)
                         ELSE 0 END) AS pkgs_total
           FROM shipment_header h
          WHERE h.created_at BETWEEN ? AND ?
            AND h.closed = 0
            AND h.invoice_root IS NOT NULL
            AND h.qr_token IS NOT NULL
-           AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.delivered = 0)
+           AND EXISTS (SELECT 1 FROM shipment_loaded l WHERE l.trip_id = h.id AND l.loaded = 1 AND l.delivered = 0)
          GROUP BY h.customer_code, h.customer_name
          ORDER BY h.customer_name;
         """,
@@ -1097,6 +1392,7 @@ def get_customers_with_pending_orders(start: str = None, end: str = None, _: Tok
             "customer_code": r.customer_code,
             "customer_name": r.customer_name,
             "pending_order_count": r.pending_order_count,
+            "pkgs_remaining": r.pkgs_remaining,  # ✅ YENİ: Kalan paket sayısı
             "pkgs_total": r.pkgs_total,
             "total_packages": r.pkgs_total,
             "package_count": r.pkgs_total
@@ -1127,7 +1423,7 @@ def get_customer_pending_orders(customer_code: str, _: TokenData):
                 l.trip_id,
                 COUNT(*) as pending_packages
             FROM shipment_loaded l
-            WHERE l.delivered = 0  -- ✅ Sadece teslim edilmemiş paketler
+            WHERE l.loaded = 1 AND l.delivered = 0  -- ✅ DÜZELTİLDİ: Yüklenmiş ama teslim edilmemiş paketler
             GROUP BY l.trip_id
         ) pending_counts ON h.id = pending_counts.trip_id
         WHERE h.customer_code = ?
@@ -1143,7 +1439,7 @@ def get_customer_pending_orders(customer_code: str, _: TokenData):
         cur.execute("""
             SELECT CAST(pkg_no AS VARCHAR) as barcode
             FROM shipment_loaded 
-            WHERE trip_id = ? AND delivered = 0  -- ✅ Önemli: delivered = 0 filtresi
+            WHERE trip_id = ? AND loaded = 1 AND delivered = 0  -- ✅ DÜZELTİLDİ: loaded = 1 filtresi eklendi
         """, row.order_id)
         
         barcodes = [barcode_row.barcode for barcode_row in cur.fetchall()]
@@ -1153,6 +1449,7 @@ def get_customer_pending_orders(customer_code: str, _: TokenData):
             orders.append({
                 "order_id": str(row.order_id),
                 "order_number": row.order_number or row.invoice_root,
+                "pkgs_remaining": len(barcodes),  # ✅ YENİ: Kalan paket sayısı
                 "pkgs_total": len(barcodes),      # ✅ Gerçek bekleyen paket sayısı
                 "package_count": len(barcodes),   # ✅ Alternative field  
                 "delivery_address": row.delivery_address,
