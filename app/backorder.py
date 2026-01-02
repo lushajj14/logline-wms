@@ -76,6 +76,25 @@ def create_tables() -> None:
                      AND Object_ID = Object_ID('{SCHEMA}.shipment_lines'))
         ALTER TABLE {SCHEMA}.shipment_lines
             ADD loaded BIT DEFAULT 0;
+
+    /* backorders tablosuna eksik kolonları ekle */
+    IF NOT EXISTS (SELECT * FROM sys.columns
+                   WHERE Name='qty_scanned'
+                     AND Object_ID = Object_ID('{SCHEMA}.backorders'))
+        ALTER TABLE {SCHEMA}.backorders
+            ADD qty_scanned FLOAT NULL;
+
+    IF NOT EXISTS (SELECT * FROM sys.columns
+                   WHERE Name='scanned_by'
+                     AND Object_ID = Object_ID('{SCHEMA}.backorders'))
+        ALTER TABLE {SCHEMA}.backorders
+            ADD scanned_by NVARCHAR(64) NULL;
+
+    IF NOT EXISTS (SELECT * FROM sys.columns
+                   WHERE Name='scanned_at'
+                     AND Object_ID = Object_ID('{SCHEMA}.backorders'))
+        ALTER TABLE {SCHEMA}.backorders
+            ADD scanned_at DATETIME NULL;
     """
     with get_conn(autocommit=True) as cn:
         cn.execute(ddl)
@@ -170,26 +189,42 @@ def add_shipment(order_no: str,          # sipariş / fatura kökü
 # -------------------------------------------------------------------- #
 def list_pending() -> List[Dict[str,Any]]:
     """Bekleyen backorder'ları müşteri ve ürün bilgileriyle birlikte getirir"""
+    # Tabloların oluşturulduğundan emin ol
+    ensure_tables()
+
     # Logo ERP tablo isimleri için _t fonksiyonunu import et
     from app.dao.logo import _t
-    
-    sql = f"""
-    SELECT 
-        b.*,
-        C.DEFINITION_ as customer_name,
-        C.CODE as customer_code,
-        I.NAME as item_name
-    FROM {SCHEMA}.backorders b
-    LEFT JOIN {_t('ORFICHE')} O ON b.order_no = O.FICHENO
-    LEFT JOIN {_t('CLCARD', period_dependent=False)} C ON O.CLIENTREF = C.LOGICALREF
-    LEFT JOIN {_t('ITEMS', period_dependent=False)} I ON b.item_code = I.CODE
-    WHERE b.fulfilled = 0
-    ORDER BY b.order_no, b.item_code
-    """
-    with get_conn() as cn:
-        cur = cn.execute(sql)
-        cols = [c[0].lower() for c in cur.description]
-        return [dict(zip(cols,row)) for row in cur.fetchall()]
+
+    try:
+        sql = f"""
+        SELECT
+            b.*,
+            COALESCE(SH.customer_name, C.DEFINITION_) as customer_name,
+            COALESCE(SH.customer_code, C.CODE) as customer_code,
+            I.NAME as item_name
+        FROM {SCHEMA}.backorders b
+        LEFT JOIN {SCHEMA}.shipment_header SH ON b.order_no = SH.order_no
+        LEFT JOIN {_t('ORFICHE')} O ON b.order_no = O.FICHENO
+        LEFT JOIN {_t('CLCARD', period_dependent=False)} C ON O.CLIENTREF = C.LOGICALREF
+        LEFT JOIN {_t('ITEMS', period_dependent=False)} I ON b.item_code = I.CODE
+        WHERE b.fulfilled = 0
+        ORDER BY b.order_no, b.item_code
+        """
+        with get_conn() as cn:
+            cur = cn.execute(sql)
+            cols = [c[0].lower() for c in cur.description]
+            rows = cur.fetchall()
+
+            # Satırlar yoksa boş liste döndür
+            if not rows:
+                return []
+
+            return [dict(zip(cols,row)) for row in rows]
+
+    except Exception as e:
+        _log.error(f"list_pending hatası: {e}")
+        # Hata durumunda boş liste döndür (None değil!)
+        return []
 
 def mark_fulfilled(back_id:int, qty_scanned:float=None, scanned_by:str=None):
     """
@@ -199,52 +234,61 @@ def mark_fulfilled(back_id:int, qty_scanned:float=None, scanned_by:str=None):
     """
     import getpass
     from datetime import datetime
-    
-    # Önce mevcut veriyi al
-    with get_conn() as cn:
-        row = cn.execute(f"SELECT * FROM {SCHEMA}.backorders WHERE id=?", back_id).fetchone()
-        if not row:
-            return False
-            
-    # qty_scanned belirtilmediyse, qty_missing kadar okutulmuş say
-    if qty_scanned is None:
-        qty_scanned = row.qty_missing
-    
-    # scanned_by belirtilmediyse, sistem kullanıcısını al
-    if scanned_by is None:
-        try:
-            scanned_by = getpass.getuser()
-        except:
-            scanned_by = 'SYSTEM'
-    
-    # Backorders tablosunu güncelle
-    sql_update = f"""UPDATE {SCHEMA}.backorders
-                     SET fulfilled=1, 
-                         fulfilled_at=GETDATE(),
-                         qty_scanned=?,
-                         scanned_by=?,
-                         scanned_at=GETDATE()
-                     WHERE id=?"""
-    
-    with get_conn(autocommit=True) as cn:
-        cn.execute(sql_update, qty_scanned, scanned_by, back_id)
-        
-        # Eğer fulfilled olduysa, shipment_lines'a da ekle
-        if row.order_no and row.item_code:
-            # trip_date olarak bugünü kullan
-            trip_date = datetime.now().strftime('%Y-%m-%d')
-            
-            # shipment_lines'a ekle (backorder'dan tamamlanan olarak işaretle)
-            add_shipment(
-                order_no=row.order_no,
-                trip_date=trip_date,
-                item_code=row.item_code,
-                warehouse_id=row.warehouse_id or 0,
-                invoiced_qty=row.qty_missing,  # İstenen miktar
-                qty_delta=qty_scanned  # Okutulup gönderilen miktar
-            )
-    
-    return True
+
+    # Tabloların oluşturulduğundan emin ol
+    ensure_tables()
+
+    try:
+        # Önce mevcut veriyi al
+        with get_conn() as cn:
+            row = cn.execute(f"SELECT * FROM {SCHEMA}.backorders WHERE id=?", back_id).fetchone()
+            if not row:
+                _log.warning(f"Backorder ID {back_id} bulunamadı")
+                return False
+
+        # qty_scanned belirtilmediyse, qty_missing kadar okutulmuş say
+        if qty_scanned is None:
+            qty_scanned = row.qty_missing
+
+        # scanned_by belirtilmediyse, sistem kullanıcısını al
+        if scanned_by is None:
+            try:
+                scanned_by = getpass.getuser()
+            except:
+                scanned_by = 'SYSTEM'
+
+        # Backorders tablosunu güncelle
+        sql_update = f"""UPDATE {SCHEMA}.backorders
+                         SET fulfilled=1,
+                             fulfilled_at=GETDATE(),
+                             qty_scanned=?,
+                             scanned_by=?,
+                             scanned_at=GETDATE()
+                         WHERE id=?"""
+
+        with get_conn(autocommit=True) as cn:
+            cn.execute(sql_update, qty_scanned, scanned_by, back_id)
+
+            # Eğer fulfilled olduysa, shipment_lines'a da ekle
+            if row.order_no and row.item_code:
+                # trip_date olarak bugünü kullan
+                trip_date = datetime.now().strftime('%Y-%m-%d')
+
+                # shipment_lines'a ekle (backorder'dan tamamlanan olarak işaretle)
+                add_shipment(
+                    order_no=row.order_no,
+                    trip_date=trip_date,
+                    item_code=row.item_code,
+                    warehouse_id=row.warehouse_id or 0,
+                    invoiced_qty=row.qty_missing,  # İstenen miktar
+                    qty_delta=qty_scanned  # Okutulup gönderilen miktar
+                )
+
+        return True
+
+    except Exception as e:
+        _log.error(f"mark_fulfilled hatası (ID: {back_id}): {e}")
+        raise  # Hatayı yukarı fırlat, kullanıcı görsün
 
 
 # --------------------------------------------------------------------

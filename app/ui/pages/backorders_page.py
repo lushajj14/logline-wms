@@ -256,11 +256,12 @@ class BackordersPage(QWidget):
         """Siparişler tablosunu doldur"""
         self.tbl_orders.setRowCount(0)
         self.all_orders_data = []  # Filtreleme için tüm veriyi sakla
-        
+
         for order_no, order_data in self.grouped_orders.items():
-            # Müşteri adını kısalt
-            customer_name = order_data["customer"][:25]
-            if len(order_data["customer"]) > 25:
+            # Müşteri adını kısalt - None kontrolü ekle!
+            customer = order_data.get("customer") or "Bilinmiyor"
+            customer_name = customer[:25] if customer else "Bilinmiyor"
+            if customer and len(customer) > 25:
                 customer_name += "..."
             
             # Veriyi kaydet (filtreleme için)
@@ -495,14 +496,28 @@ class BackordersPage(QWidget):
         """DB'den bekleyenleri çek ve hierarşik yapıyı güncelle."""
         try:
             recs = list_pending()
+
+            # None kontrolü ekle
+            if recs is None:
+                QMessageBox.warning(self, "Yükleme Hatası",
+                    "Backorder verileri yüklenemedi.\n\n"
+                    "Olası sebepler:\n"
+                    "- Veritabanı bağlantısı yok\n"
+                    "- backorders tablosu henüz oluşturulmamış\n"
+                    "- Logo ERP tabloları erişilebilir değil")
+                recs = []  # Boş liste kullan
+
         except Exception as exc:
-            QMessageBox.critical(self, "DB Hatası", str(exc))
+            QMessageBox.critical(self, "DB Hatası",
+                f"Backorder verileri yüklenirken hata:\n\n{str(exc)}\n\n"
+                "Veritabanı bağlantınızı kontrol edin.")
+            recs = []  # Boş liste kullan
             return
 
-        self.records_cache = recs
-        self.grouped_orders = self.group_orders(recs)
+        self.records_cache = recs if recs else []
+        self.grouped_orders = self.group_orders(self.records_cache)
         self.populate_orders()  # populate_tree yerine populate_orders
-        
+
         # Seçimi temizle
         self.selected_order = None
         self.selected_items = []

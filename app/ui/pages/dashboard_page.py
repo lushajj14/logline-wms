@@ -14,6 +14,7 @@ from PyQt5.QtGui import QFont, QPalette, QColor
 from typing import Dict, List
 import logging
 from datetime import datetime, timedelta
+from app.dao.logo_tables import LogoTables as T
 
 logger = logging.getLogger(__name__)
 
@@ -453,20 +454,20 @@ class DashboardPage(QWidget):
             
             # Sipariş sayısı (LOGO tablosu)
             try:
-                orders_result = fetch_one("SELECT COUNT(*) as count FROM LG_025_01_ORFICHE WHERE TRCODE IN (1,2,3,4)")
+                orders_result = fetch_one(f"SELECT COUNT(*) as count FROM {T.ORFICHE} WHERE TRCODE IN (1,2,3,4)")
                 self.stats_cards['orders'].set_value(str(orders_result.get('count', 0) if orders_result else 0))
             except Exception as e:
                 logger.error(f"Orders count error: {e}")
                 # Fallback - başka bir tablo deneyelim
                 try:
-                    orders_result = fetch_one("SELECT COUNT(*) as count FROM LG_025_01_ORFLINE")
+                    orders_result = fetch_one(f"SELECT COUNT(*) as count FROM {T.ORFLINE}")
                     self.stats_cards['orders'].set_value(f"{orders_result.get('count', 0) if orders_result else 0}")
                 except:
                     self.stats_cards['orders'].set_value("N/A")
             
             # Stok kalemleri sayısı
             try:
-                items_result = fetch_one("SELECT COUNT(*) as count FROM LG_025_ITEMS WHERE ACTIVE = 0")
+                items_result = fetch_one(f"SELECT COUNT(*) as count FROM {T.ITEMS} WHERE ACTIVE = 0")
                 self.stats_cards['items'].set_value(str(items_result.get('count', 0) if items_result else 0))
             except Exception as e:
                 logger.error(f"Items count error: {e}")
@@ -503,9 +504,9 @@ class DashboardPage(QWidget):
             
             # Ambar işlemleri (bugün)
             try:
-                warehouse_result = fetch_one("""
-                    SELECT COUNT(*) as count 
-                    FROM LG_025_01_STFICHE 
+                warehouse_result = fetch_one(f"""
+                    SELECT COUNT(*) as count
+                    FROM {T.STFICHE}
                     WHERE CONVERT(DATE, DATE_) = CONVERT(DATE, GETDATE())
                 """)
                 self.stats_cards['warehouse'].set_value(str(warehouse_result.get('count', 0) if warehouse_result else 0))
@@ -606,9 +607,9 @@ class DashboardPage(QWidget):
                 
                 # LOGO tabloları test
                 logo_tests = [
-                    ("Sipariş Tablosu", "SELECT COUNT(*) as count FROM LG_025_01_ORFICHE"),
-                    ("Stok Tablosu", "SELECT COUNT(*) as count FROM LG_025_ITEMS"),
-                    ("Ambar Tablosu", "SELECT COUNT(*) as count FROM LG_025_01_STFICHE")
+                    ("Sipariş Tablosu", f"SELECT COUNT(*) as count FROM {T.ORFICHE}"),
+                    ("Stok Tablosu", f"SELECT COUNT(*) as count FROM {T.ITEMS}"),
+                    ("Ambar Tablosu", f"SELECT COUNT(*) as count FROM {T.STFICHE}")
                 ]
                 
                 logo_status = []

@@ -684,7 +684,15 @@ class EnhancedSettingsPage(QWidget):
         
         # Save everything to disk once
         manager.save()
-        
+
+        # Reload Logo table configuration if company/period changed
+        try:
+            from app.dao.logo_tables import LogoTables
+            LogoTables.reload_config()
+            logger.info(f"Logo tables reloaded: {LogoTables.COMPANY_NR}_{LogoTables.PERIOD_NR}")
+        except Exception as e:
+            logger.warning(f"Logo tables reload failed: {e}")
+
         # Check if database settings changed
         import os
         

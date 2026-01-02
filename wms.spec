@@ -250,6 +250,12 @@ a = Analysis(
         'app.sound',
         'app.ddl',
         'startup_validator',
+
+        # Remote config
+        'app.config.remote_config',
+
+        # Concurrency management
+        'app.dao.concurrency_manager',
         
         # API modules
         'api',
@@ -295,7 +301,7 @@ a = Analysis(
         'wheel',
         
         # Exclude unused GUI toolkits
-        'tkinter',  # Remove this if you need the scanner UI
+        # 'tkinter',  # Scanner UI kullanıyor, exclude etme!
         # 'wx',
         # 'PySide2',
         # 'PySide6',

@@ -20,6 +20,7 @@ from app.dao.logo import (
     log_activity,
     queue_inc,
 )
+from app.dao.logo_tables import LogoTables as T
 
 from PyQt5.QtMultimedia import QSoundEffect
 from PyQt5.QtCore import QUrl, QTimer, Qt
@@ -2163,10 +2164,10 @@ class ScannerPage(QWidget):
                     ol.STOCKREF,
                     st.CODE as item_code,
                     SUM(ol.SHIPPEDAMOUNT) as total_sent
-                FROM LG_025_01_ORFICHE oh
-                INNER JOIN LG_025_01_ORFLINE ol ON oh.LOGICALREF = ol.ORDFICHEREF
-                LEFT JOIN LG_025_ITEMS st ON ol.STOCKREF = st.LOGICALREF
-                WHERE oh.STATUS = 4 
+                FROM {T.ORFICHE} oh
+                INNER JOIN {T.ORFLINE} ol ON oh.LOGICALREF = ol.ORDFICHEREF
+                LEFT JOIN {T.ITEMS} st ON ol.STOCKREF = st.LOGICALREF
+                WHERE oh.STATUS = 4
                   AND oh.DATE_ >= DATEADD(DAY, -7, GETDATE())
                   AND st.CODE IS NOT NULL
                 GROUP BY ol.STOCKREF, st.CODE

@@ -9,6 +9,7 @@ from datetime import date
 import logging
 
 from app.dao.logo import get_connection as get_logo_connection, fetch_order_header, fetch_invoice_no
+from app.dao.logo_tables import LogoTables as T
 from app.dao.transactions import transaction_scope
 from app import backorder as bo
 from app.shipment_safe_sync import safe_sync_packages
@@ -245,7 +246,7 @@ class OrderCompletionWorker(QThread):
                 genexp5_text = f"Sipariş No: {ficheno}" if ficheno else ""
                 
                 cursor.execute(
-                    "UPDATE LG_025_01_ORFICHE SET STATUS = 4, GENEXP4 = ?, GENEXP5 = ? "
+                    f"UPDATE {T.ORFICHE} SET STATUS = 4, GENEXP4 = ?, GENEXP5 = ? "
                     "WHERE LOGICALREF = ?",
                     f"PAKET SAYISI : {self.package_count}",
                     genexp5_text,
