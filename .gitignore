@@ -71,12 +71,14 @@ web/frontend/build/
 web/backend/static/
 
 # === Generated Content (LARGE FILES) ===
-# PDF outputs - ignore all PDFs
+# PDF outputs - ignore all PDFs in any location
 *.pdf
 picklists/
+app/picklists/
 labels/
 output/
 reports/
+app/logs/
 
 # Screenshots and images
 *.png
