@@ -26,7 +26,7 @@ LABEL_OUT_DIR (default: ./labels)
 """
 from __future__ import annotations
 
-__all__ = ['make_labels']
+__all__ = ['make_labels', 'LabelError']
 
 import os
 import sys
@@ -244,6 +244,11 @@ def draw_page(c: canvas.Canvas, p: Dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
+class LabelError(Exception):
+    """Label generation errors"""
+    pass
+
+
 def make_labels(order_no: str, *, force: bool = False, footer: str = ""):
     """
     • Her paket için barkod  →  FaturaNo-K1 , FaturaNo-K2 …
@@ -252,12 +257,12 @@ def make_labels(order_no: str, *, force: bool = False, footer: str = ""):
     hdr = dao.fetch_order_header(order_no)
     if not hdr:
         logging.error("Sipariş bulunamadı: %s", order_no)
-        sys.exit(1)
+        raise LabelError(f"Sipariş bulunamadı: {order_no}")
 
     invoice_no = fetch_invoice_no(order_no)
     if not invoice_no and not force:
         logging.warning("Fatura yok – basılmadı")
-        sys.exit(1)
+        raise LabelError("Fatura yok – etiket basılamadı")
 
     barkod_root = invoice_no or order_no           # ← temel kısım
     pkg_tot     = parse_int(hdr.get("genexp4", "1"))
@@ -330,7 +335,11 @@ def main():
         logging.error("Geçersiz order_no, işlem atlandı!")
         sys.exit(1)
 
-    make_labels(ord_no, force=args.force, footer=args.footer)
+    try:
+        make_labels(ord_no, force=args.force, footer=args.footer)
+    except LabelError as e:
+        logging.error(str(e))
+        sys.exit(1)
 
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
