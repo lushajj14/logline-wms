@@ -30,16 +30,17 @@ logger = logging.getLogger(__name__)
 # Konfigürasyon Yükleme
 # ---------------------------------------------------------------------------
 
-def _get_logo_config() -> tuple[str, str]:
+def _get_logo_config() -> tuple[str, str, str]:
     """
-    Logo firma ve dönem numaralarını al.
+    Logo firma, dönem ve sipariş yılı numaralarını al.
     Öncelik: settings.json > environment > defaults
 
     Returns:
-        Tuple (company_nr, period_nr)
+        Tuple (company_nr, period_nr, order_year)
     """
     company_nr = None
     period_nr = None
+    order_year = None
 
     # 1. Önce settings.json'dan dene (db.company_nr veya logo.company_nr)
     try:
@@ -48,6 +49,7 @@ def _get_logo_config() -> tuple[str, str]:
         # Settings UI'da db.company_nr olarak kaydediliyor
         company_nr = manager.get("db.company_nr") or manager.get("logo.company_nr")
         period_nr = manager.get("db.period_nr") or manager.get("logo.period_nr")
+        order_year = manager.get("db.order_year") or manager.get("logo.order_year")
     except Exception as e:
         logger.debug(f"Settings'den Logo config okunamadı: {e}")
 
@@ -56,9 +58,11 @@ def _get_logo_config() -> tuple[str, str]:
         company_nr = os.getenv("LOGO_COMPANY_NR")
     if not period_nr:
         period_nr = os.getenv("LOGO_PERIOD_NR")
+    if not order_year:
+        order_year = os.getenv("LOGO_ORDER_YEAR")
 
     # 3. env_config'den al (remote config dahil)
-    if not company_nr or not period_nr:
+    if not company_nr or not period_nr or not order_year:
         try:
             from app.config.env_config import get_config
             config = get_config()
@@ -67,15 +71,19 @@ def _get_logo_config() -> tuple[str, str]:
                 company_nr = db_config.get("company_nr")
             if not period_nr:
                 period_nr = db_config.get("period_nr")
+            if not order_year:
+                order_year = db_config.get("order_year")
         except Exception as e:
             logger.debug(f"env_config'den Logo config okunamadı: {e}")
 
     # 4. Defaults
+    from datetime import datetime
     company_nr = company_nr or "025"
     period_nr = period_nr or "01"
+    order_year = order_year or str(datetime.now().year)
 
-    logger.debug(f"Logo config: company={company_nr}, period={period_nr}")
-    return company_nr, period_nr
+    logger.debug(f"Logo config: company={company_nr}, period={period_nr}, order_year={order_year}")
+    return company_nr, period_nr, order_year
 
 
 # ---------------------------------------------------------------------------
@@ -90,12 +98,13 @@ class _LogoTablesMeta(type):
 
     _company_nr: Optional[str] = None
     _period_nr: Optional[str] = None
+    _order_year: Optional[str] = None
     _tables_cache: dict = {}
 
     def _ensure_config(cls):
         """Config'i yükle veya cache'den al."""
         if cls._company_nr is None:
-            cls._company_nr, cls._period_nr = _get_logo_config()
+            cls._company_nr, cls._period_nr, cls._order_year = _get_logo_config()
 
     def _period_table(cls, name: str) -> str:
         """Period-dependent tablo adı (örn: LG_025_01_ORFICHE)"""
@@ -111,9 +120,10 @@ class _LogoTablesMeta(type):
         """Config'i yeniden yükle (runtime değişikliği için)."""
         cls._company_nr = None
         cls._period_nr = None
+        cls._order_year = None
         cls._tables_cache.clear()
         cls._ensure_config()
-        logger.info(f"Logo tables config reloaded: {cls._company_nr}_{cls._period_nr}")
+        logger.info(f"Logo tables config reloaded: {cls._company_nr}_{cls._period_nr}, order_year={cls._order_year}")
 
     @property
     def COMPANY_NR(cls) -> str:
@@ -126,6 +136,12 @@ class _LogoTablesMeta(type):
         """Aktif dönem numarası."""
         cls._ensure_config()
         return cls._period_nr
+
+    @property
+    def ORDER_YEAR(cls) -> str:
+        """Sipariş yılı (FICHENO filtresi için, örn: 2025, 2026)."""
+        cls._ensure_config()
+        return cls._order_year
 
     # ═══════════════════════════════════════════════════════════════════════
     # PERIOD-DEPENDENT TABLOLAR (Yıllık değişen)

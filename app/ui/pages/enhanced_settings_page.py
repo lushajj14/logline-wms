@@ -233,16 +233,26 @@ class EnhancedSettingsPage(QWidget):
         self.txt_period_nr.setPlaceholderText("Dönem numarası (örn: 01)")
         self.txt_period_nr.setMaxLength(2)
         info_layout.addWidget(self.txt_period_nr, 7, 1)
-        
+
+        # Order year for FICHENO filter (S%2025% -> S%2026%)
+        info_layout.addWidget(QLabel("Sipariş Yılı:"), 8, 0)
+        self.txt_order_year = QLineEdit()
+        from datetime import datetime
+        default_year = str(datetime.now().year)
+        self.txt_order_year.setText(self.manager.get("db.order_year", os.getenv("LOGO_ORDER_YEAR", default_year)))
+        self.txt_order_year.setPlaceholderText("Sipariş yılı (örn: 2026)")
+        self.txt_order_year.setMaxLength(4)
+        info_layout.addWidget(self.txt_order_year, 8, 1)
+
         # Test connection button
         self.btn_test_db = QPushButton("Bağlantıyı Test Et")
         self.btn_test_db.clicked.connect(self.test_database_connection)
-        info_layout.addWidget(self.btn_test_db, 8, 0, 1, 2)
+        info_layout.addWidget(self.btn_test_db, 9, 0, 1, 2)
         
         # Info label for restart requirement
         self.lbl_db_info = QLabel("ℹ️ DB ayarları değişikliği kaydedildiğinde canlı olarak uygulanır")
         self.lbl_db_info.setStyleSheet("color: green; font-weight: bold;")
-        info_layout.addWidget(self.lbl_db_info, 9, 0, 1, 2)
+        info_layout.addWidget(self.lbl_db_info, 10, 0, 1, 2)
         
         layout.addWidget(info_group)
         
@@ -630,6 +640,7 @@ class EnhancedSettingsPage(QWidget):
         manager.set("db.password", self.txt_password.text(), auto_save=False)
         manager.set("db.company_nr", self.txt_company_nr.text(), auto_save=False)
         manager.set("db.period_nr", self.txt_period_nr.text(), auto_save=False)
+        manager.set("db.order_year", self.txt_order_year.text(), auto_save=False)
         manager.set("db.retry", self.spin_retry.value(), auto_save=False)
         manager.set("db.heartbeat", self.spin_heartbeat.value(), auto_save=False)
         manager.set("db.pool_enabled", self.chk_pool.isChecked(), auto_save=False)

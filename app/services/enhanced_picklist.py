@@ -47,6 +47,7 @@ from app.dao.logo import (
     fetch_all,
     _t,
 )
+from app.dao.logo_tables import LogoTables
 from app.settings_manager import get_manager
 from app.utils.wms_paths import get_wms_folders, get_picklist_path
 
@@ -155,7 +156,7 @@ def get_daily_statistics() -> Dict[str, any]:
                    SUM(CASE WHEN STATUS = 4 THEN 1 ELSE 0 END) as completed
             FROM {_t('ORFICHE')}
             WHERE CAST(DATE_ AS DATE) = ?
-            AND FICHENO LIKE 'S%2025%'
+            AND FICHENO LIKE 'S%{LogoTables.ORDER_YEAR}%'
         """, today)
         
         if today_orders:
@@ -356,7 +357,7 @@ def create_daily_summary_pdf() -> Path:
                    O.GENEXP3 as genexp3
             FROM {_t('ORFICHE')} O
             WHERE CAST(O.DATE_ AS DATE) = CAST(GETDATE() AS DATE)
-            AND O.FICHENO LIKE 'S%2025%'
+            AND O.FICHENO LIKE 'S%{LogoTables.ORDER_YEAR}%'
             ORDER BY O.STATUS, O.FICHENO
         """)
     except:
@@ -371,7 +372,7 @@ def create_daily_summary_pdf() -> Path:
                    GENEXP2 as genexp2,
                    GENEXP3 as genexp3
             FROM {_t('ORFICHE')}
-            WHERE FICHENO LIKE 'S%2025%'
+            WHERE FICHENO LIKE 'S%{LogoTables.ORDER_YEAR}%'
             ORDER BY STATUS, FICHENO
         """)
     

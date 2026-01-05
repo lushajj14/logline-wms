@@ -40,6 +40,7 @@ from app.dao.logo import (
     get_conn,
     _t,
 )
+from app.dao.logo_tables import LogoTables
 from app.services.enhanced_picklist import (
     create_enhanced_picklist_pdf,
     create_daily_summary_pdf,
@@ -344,7 +345,7 @@ class EnhancedPicklistPage(QWidget):
                     LEFT JOIN {_t('CLCARD', period_dependent=False)} C 
                          ON C.LOGICALREF = F.CLIENTREF
                     {where_clause}
-                    AND F.FICHENO LIKE 'S%2025%'
+                    AND F.FICHENO LIKE 'S%{LogoTables.ORDER_YEAR}%'
                     ORDER BY F.LOGICALREF DESC
                 """)
             
@@ -1070,7 +1071,7 @@ Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
                            SUM(CASE WHEN STATUS = 4 THEN 1 ELSE 0 END) as completed
                     FROM {_t('ORFICHE')}
                     WHERE CAST(DATE_ AS DATE) = '{date}'
-                    AND FICHENO LIKE 'S%2025%'
+                    AND FICHENO LIKE 'S%{LogoTables.ORDER_YEAR}%'
                 """)
                 
                 if day_stats:
